@@ -37,6 +37,7 @@ import {
   WorkspacePanel,
 } from "@/components/layout/workspace-ui";
 import { getAPIErrorMessage } from "@/lib/http";
+import { formatDNSRecordValueForDisplay } from "@/lib/dns-record-display";
 import { useAuthStore } from "@/lib/auth-store";
 import { readPersistedState, writePersistedState } from "@/lib/persisted-state";
 import {
@@ -2020,7 +2021,13 @@ export function UserDnsPage() {
                                                                     <WorkspaceBadge variant="outline">{record.type}</WorkspaceBadge>
                                                                   </td>
                                                                   <td className="px-3 py-3 font-medium">{record.name}</td>
-                                                                  <td className="px-3 py-3 font-mono text-xs break-all whitespace-normal">{record.value}</td>
+                                                                  <td className="px-3 py-3 font-mono text-xs break-all whitespace-normal">
+                                                                    {formatDNSRecordValueForDisplay(
+                                                                      record.type,
+                                                                      record.value,
+                                                                      activeProviderWorkspace?.provider,
+                                                                    )}
+                                                                  </td>
                                                                   <td className="px-3 py-3 text-xs text-muted-foreground">{record.ttl}</td>
                                                                 </tr>
                                                               ))}
@@ -2157,7 +2164,13 @@ export function UserDnsPage() {
                                                                 <tr className="border-t border-border/60 bg-background/70" key={`${record.type}-${record.name}-${index}`}>
                                                                   <td className="px-3 py-3"><WorkspaceBadge variant="outline">{record.type}</WorkspaceBadge></td>
                                                                   <td className="px-3 py-3 font-medium">{record.name}</td>
-                                                                  <td className="px-3 py-3 font-mono text-xs break-all whitespace-normal">{record.value}</td>
+                                                                  <td className="px-3 py-3 font-mono text-xs break-all whitespace-normal">
+                                                                    {formatDNSRecordValueForDisplay(
+                                                                      record.type,
+                                                                      record.value,
+                                                                      activeProviderWorkspace?.provider,
+                                                                    )}
+                                                                  </td>
                                                                   <td className="px-3 py-3 text-xs text-muted-foreground">{record.ttl || "自动"}</td>
                                                                   <td className="px-3 py-3 text-xs text-muted-foreground">{record.priority || "-"}</td>
                                                                 </tr>

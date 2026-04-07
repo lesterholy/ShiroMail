@@ -194,8 +194,8 @@ func defaultConfigValueForKey(key string) map[string]any {
 		return map[string]any{
 			"enabled":         true,
 			"listenAddr":      ":2525",
-			"hostname":        "mail.shiro.local",
-			"dkimCnameTarget": "shiro._domainkey.shiro.local",
+			"hostname":        legacySMTPHostname,
+			"dkimCnameTarget": legacyDKIMTarget,
 			"maxMessageBytes": 10485760,
 		}
 	case ConfigKeyMailDelivery:
@@ -315,8 +315,8 @@ func normalizeConfigValue(key string, value map[string]any) map[string]any {
 	case key == ConfigKeyMailSMTP:
 		base["enabled"] = normalizeBool(base["enabled"], true)
 		base["listenAddr"] = normalizeString(base["listenAddr"], ":2525")
-		base["hostname"] = normalizeString(base["hostname"], "mail.shiro.local")
-		base["dkimCnameTarget"] = normalizeString(base["dkimCnameTarget"], "shiro._domainkey.shiro.local")
+		base["hostname"] = normalizeString(base["hostname"], legacySMTPHostname)
+		base["dkimCnameTarget"] = normalizeString(base["dkimCnameTarget"], legacyDKIMTarget)
 		base["maxMessageBytes"] = normalizeInt(base["maxMessageBytes"], 10485760)
 	case key == ConfigKeyMailDelivery:
 		base["enabled"] = normalizeBool(base["enabled"], false)
@@ -442,8 +442,8 @@ func defaultConfigEntries() []ConfigEntry {
 func LoadPublicSiteSettings(ctx context.Context, repo ConfigRepository) (PublicSiteSettings, error) {
 	settings := PublicSiteSettings{
 		MailDNS: PublicMailDNSHints{
-			MXTarget:        "mail.shiro.local",
-			DKIMCnameTarget: "shiro._domainkey.shiro.local",
+			MXTarget:        legacySMTPHostname,
+			DKIMCnameTarget: legacyDKIMTarget,
 		},
 	}
 
@@ -472,9 +472,18 @@ func LoadPublicSiteSettings(ctx context.Context, repo ConfigRepository) (PublicS
 			}
 		case ConfigKeyMailSMTP:
 			settings.MailDNS = PublicMailDNSHints{
-				MXTarget:        normalizeString(item.Value["hostname"], "mail.shiro.local"),
-				DKIMCnameTarget: normalizeString(item.Value["dkimCnameTarget"], "shiro._domainkey.shiro.local"),
+				MXTarget:        normalizeString(item.Value["hostname"], legacySMTPHostname),
+				DKIMCnameTarget: normalizeString(item.Value["dkimCnameTarget"], legacyDKIMTarget),
 			}
+		}
+	}
+
+	if derivedMX, derivedDKIM, ok := deriveMailTargetsFromAppBaseURL(settings.Identity.AppBaseURL); ok {
+		if shouldUseDerivedMailTarget(settings.MailDNS.MXTarget) {
+			settings.MailDNS.MXTarget = derivedMX
+		}
+		if shouldUseDerivedMailTarget(settings.MailDNS.DKIMCnameTarget) {
+			settings.MailDNS.DKIMCnameTarget = derivedDKIM
 		}
 	}
 

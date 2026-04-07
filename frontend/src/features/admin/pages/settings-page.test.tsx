@@ -254,6 +254,32 @@ describe("AdminSettingsPage", () => {
     expect(vi.mocked(upsertAdminConfig)).not.toHaveBeenCalled();
   });
 
+  it("derives smtp defaults from the configured site domain", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AdminSettingsPage />
+      </QueryClientProvider>,
+    );
+
+    const otherTab = await screen.findByRole("tab", { name: "其他设置" });
+    otherTab.focus();
+    fireEvent.keyDown(otherTab, { key: "Enter", code: "Enter" });
+
+    expect(
+      await screen.findByRole("textbox", { name: "SMTP Hostname" }),
+    ).toHaveValue("smtp.example.com");
+    expect(
+      screen.getByRole("textbox", { name: "DKIM CNAME Target" }),
+    ).toHaveValue("shiro._domainkey.example.com");
+  });
+
   it("sends a mail delivery test from the delivery settings panel", async () => {
     const queryClient = new QueryClient({
       defaultOptions: {
@@ -296,7 +322,8 @@ describe("AdminSettingsPage", () => {
     );
 
     const oauthTab = await screen.findByRole("tab", { name: "OAuth 设置" });
-    fireEvent.click(oauthTab);
+    oauthTab.focus();
+    fireEvent.keyDown(oauthTab, { key: "Enter", code: "Enter" });
 
     await screen.findByText("OAuth 应用");
     const githubCard = screen.getByText("GitHub").closest("div.rounded-xl");

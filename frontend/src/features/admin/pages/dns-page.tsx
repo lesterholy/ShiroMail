@@ -40,6 +40,7 @@ import {
   WorkspaceBadge,
 } from "@/components/layout/workspace-ui";
 import { getAPIErrorMessage } from "@/lib/http";
+import { formatDNSRecordValueForDisplay } from "@/lib/dns-record-display";
 import { readPersistedState, writePersistedState } from "@/lib/persisted-state";
 import { cn } from "@/lib/utils";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
@@ -71,6 +72,16 @@ function providerRecordMergeKey(record: ProviderRecordItem) {
     record.name.trim().toLowerCase(),
     String(record.priority ?? 0),
   ].join("|");
+}
+
+function getProviderTypeByID(
+  providers: DomainProviderItem[] | undefined,
+  providerID: number | undefined,
+) {
+  if (!providerID) {
+    return null;
+  }
+  return providers?.find((item) => item.id === providerID)?.provider ?? null;
 }
 
 function mergeProviderRecords(
@@ -658,6 +669,10 @@ export function AdminDnsPage() {
         [],
       ),
   });
+  const currentRecordProviderType = useMemo(
+    () => getProviderTypeByID(providersQuery.data, providerRecordPanel?.providerId),
+    [providerRecordPanel?.providerId, providersQuery.data],
+  );
   const rootDomains = useMemo(
     () => (domainsQuery.data ?? []).filter((item) => item.kind === "root"),
     [domainsQuery.data],
@@ -2523,7 +2538,11 @@ export function AdminDnsPage() {
                             <WorkspaceListRow
                               key={record.id}
                               title={`${record.type} · ${record.name}`}
-                              description={record.value}
+                              description={formatDNSRecordValueForDisplay(
+                                record.type,
+                                record.value,
+                                currentRecordProviderType,
+                              )}
                               descriptionClassName="font-mono text-xs break-all whitespace-normal"
                               meta={
                                 <>

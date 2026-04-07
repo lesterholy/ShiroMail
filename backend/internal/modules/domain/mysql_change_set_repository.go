@@ -3,7 +3,6 @@ package domain
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 
 	"gorm.io/gorm"
@@ -45,12 +44,14 @@ func (r *MySQLRepository) SaveDNSChangeSet(ctx context.Context, item DNSChangeSe
 		}
 	} else {
 		var existing database.DNSChangeSetRow
-		if err := tx.First(&existing, "id = ?", item.ID).Error; err != nil {
+		found, err := findFirstRow(ctx, tx, &existing, "id = ?", item.ID)
+		if err != nil {
 			tx.Rollback()
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return DNSChangeSet{}, ErrDNSChangeSetNotFound
-			}
 			return DNSChangeSet{}, err
+		}
+		if !found {
+			tx.Rollback()
+			return DNSChangeSet{}, ErrDNSChangeSetNotFound
 		}
 		if err := tx.Model(&database.DNSChangeSetRow{}).
 			Where("id = ?", item.ID).
@@ -133,11 +134,12 @@ func (r *MySQLRepository) ListDNSChangeSets(ctx context.Context, providerAccount
 
 func (r *MySQLRepository) GetDNSChangeSetByID(ctx context.Context, id uint64) (DNSChangeSet, error) {
 	var row database.DNSChangeSetRow
-	if err := r.db.WithContext(ctx).First(&row, "id = ?", id).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return DNSChangeSet{}, ErrDNSChangeSetNotFound
-		}
+	found, err := findFirstRow(ctx, r.db, &row, "id = ?", id)
+	if err != nil {
 		return DNSChangeSet{}, err
+	}
+	if !found {
+		return DNSChangeSet{}, ErrDNSChangeSetNotFound
 	}
 
 	var operationRows []database.DNSChangeOperationRow
@@ -199,21 +201,23 @@ func (r *MySQLRepository) ensureDNSZoneRow(ctx context.Context, tx *gorm.DB, ite
 	}
 
 	var row database.DNSZoneRow
-	query := tx.WithContext(ctx)
 	switch {
 	case providerZoneID != "" && item.ProviderAccountID != 0:
-		err := query.Where("provider_account_id = ? AND provider_zone_id = ?", item.ProviderAccountID, providerZoneID).First(&row).Error
-		if err == nil {
-			return &row.ID, nil
-		}
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		found, err := findFirstRow(ctx, tx, &row, "provider_account_id = ? AND provider_zone_id = ?", item.ProviderAccountID, providerZoneID)
+		if err != nil {
 			return nil, err
+		}
+		if found {
+			return &row.ID, nil
 		}
 	}
 
 	if zoneName != "" {
-		err := query.Where("zone_name = ?", zoneName).First(&row).Error
-		if err == nil {
+		found, err := findFirstRow(ctx, tx, &row, "zone_name = ?", zoneName)
+		if err != nil {
+			return nil, err
+		}
+		if found {
 			updates := map[string]any{}
 			if providerZoneID != "" && row.ProviderZoneID != providerZoneID {
 				updates["provider_zone_id"] = providerZoneID
@@ -222,14 +226,11 @@ func (r *MySQLRepository) ensureDNSZoneRow(ctx context.Context, tx *gorm.DB, ite
 				updates["provider_account_id"] = item.ProviderAccountID
 			}
 			if len(updates) != 0 {
-				if err := query.Model(&database.DNSZoneRow{}).Where("id = ?", row.ID).Updates(updates).Error; err != nil {
+				if err := tx.WithContext(ctx).Model(&database.DNSZoneRow{}).Where("id = ?", row.ID).Updates(updates).Error; err != nil {
 					return nil, err
 				}
 			}
 			return &row.ID, nil
-		}
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, err
 		}
 	}
 

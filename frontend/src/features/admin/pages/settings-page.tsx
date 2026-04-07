@@ -55,6 +55,10 @@ import { AuthSettingsForm } from "../settings/auth-settings-form";
 import { DomainPolicyForm } from "../settings/domain-policy-form";
 import { MailSettingsForm } from "../settings/mail-settings-form";
 import { SiteSettingsForm } from "../settings/site-settings-form";
+import {
+  deriveMailTargetsFromAppBaseURL,
+  shouldReplaceWithDerivedMailTarget,
+} from "../settings/mail-domain-defaults";
 import type {
   AuthPasswordSettings,
   AuthRegistrationSettings,
@@ -484,6 +488,11 @@ export function AdminSettingsPage() {
   const [domainPolicy, setDomainPolicy] = useState<DomainPolicySettings>(
     defaultDomainPolicySettings,
   );
+  const derivedMailTargets = useMemo(
+    () => deriveMailTargetsFromAppBaseURL(siteIdentity.appBaseUrl),
+    [siteIdentity.appBaseUrl],
+  );
+  const previousDerivedMailTargetsRef = useRef(derivedMailTargets);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [feedbackVariant, setFeedbackVariant] = useState<"error" | "success">("success");
   const deliveryTestLockRef = useRef(false);
@@ -506,6 +515,36 @@ export function AdminSettingsPage() {
     setInbound(parseInbound(settingsQuery.data));
     setDomainPolicy(parseDomainPolicy(settingsQuery.data));
   }, [settingsQuery.data]);
+
+  useEffect(() => {
+    const previousDerivedTargets = previousDerivedMailTargetsRef.current;
+    previousDerivedMailTargetsRef.current = derivedMailTargets;
+
+    if (!derivedMailTargets) {
+      return;
+    }
+
+    setSMTP((current) => {
+      const next = { ...current };
+      let changed = false;
+
+      if (shouldReplaceWithDerivedMailTarget(current.hostname, previousDerivedTargets?.hostname)) {
+        if (current.hostname !== derivedMailTargets.hostname) {
+          next.hostname = derivedMailTargets.hostname;
+          changed = true;
+        }
+      }
+
+      if (shouldReplaceWithDerivedMailTarget(current.dkimCnameTarget, previousDerivedTargets?.dkimCnameTarget)) {
+        if (current.dkimCnameTarget !== derivedMailTargets.dkimCnameTarget) {
+          next.dkimCnameTarget = derivedMailTargets.dkimCnameTarget;
+          changed = true;
+        }
+      }
+
+      return changed ? next : current;
+    });
+  }, [derivedMailTargets]);
 
   const saveMutation = useMutation({
     mutationFn: async () => {

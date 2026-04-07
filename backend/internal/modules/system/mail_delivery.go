@@ -401,14 +401,37 @@ func LoadMailSMTPSettings(ctx context.Context, repo ConfigRepository) (MailSMTPC
 	if err != nil {
 		return MailSMTPConfig{}, err
 	}
-	for _, item := range items {
+
+	var smtpItem *ConfigEntry
+	siteIdentity := defaultConfigValueForKey(ConfigKeySiteIdentity)
+	for index := range items {
+		item := items[index]
 		if item.Key == ConfigKeyMailSMTP {
-			return mailSMTPConfigFromEntry(NormalizeConfigEntryForTest(item)), nil
+			normalized := NormalizeConfigEntryForTest(item)
+			smtpItem = &normalized
+			continue
+		}
+		if item.Key == ConfigKeySiteIdentity {
+			siteIdentity = normalizeConfigValue(ConfigKeySiteIdentity, item.Value)
 		}
 	}
 
-	item := NormalizeConfigEntryForTest(ConfigEntry{Key: ConfigKeyMailSMTP, Value: map[string]any{}})
-	return mailSMTPConfigFromEntry(item), nil
+	if smtpItem == nil {
+		item := NormalizeConfigEntryForTest(ConfigEntry{Key: ConfigKeyMailSMTP, Value: map[string]any{}})
+		smtpItem = &item
+	}
+
+	settings := mailSMTPConfigFromEntry(*smtpItem)
+	if derivedHost, derivedDKIM, ok := deriveMailTargetsFromAppBaseURL(normalizeString(siteIdentity["appBaseUrl"], "")); ok {
+		if shouldUseDerivedMailTarget(settings.Hostname) {
+			settings.Hostname = derivedHost
+		}
+		if shouldUseDerivedMailTarget(settings.DKIMCnameTarget) {
+			settings.DKIMCnameTarget = derivedDKIM
+		}
+	}
+
+	return settings, nil
 }
 
 func mailDeliveryConfigFromEntry(item ConfigEntry) MailDeliveryConfig {

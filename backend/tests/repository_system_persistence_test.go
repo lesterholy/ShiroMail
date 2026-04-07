@@ -308,3 +308,132 @@ func TestMySQLDomainRepositoryReusesExistingZoneWhenPreviewingProviderChangeSet(
 		t.Fatalf("expected zone provider binding to remain attached, got %+v", zone)
 	}
 }
+
+func TestMySQLDomainRepositoryPreservesProviderZoneBindingAfterRootDomainUpsert(t *testing.T) {
+	db := mustOpenTestMySQL(t)
+	ctx := context.Background()
+
+	mustResetPersistenceTables(t, db)
+	mustEnsureSchema(t, db)
+
+	repo := domain.NewMySQLRepository(db)
+	provider, err := repo.CreateProviderAccount(ctx, domain.ProviderAccount{
+		Provider:     "cloudflare",
+		OwnerType:    "platform",
+		DisplayName:  "Ops Cloudflare",
+		AuthType:     "api_token",
+		Status:       "healthy",
+		Capabilities: []string{"zones.read", "dns.write"},
+	})
+	if err != nil {
+		t.Fatalf("expected provider create success, got %v", err)
+	}
+
+	changeSet, err := repo.SaveDNSChangeSet(ctx, domain.DNSChangeSet{
+		ProviderAccountID: provider.ID,
+		ProviderZoneID:    "f367ab93421cca9e55a29f743917252f",
+		ZoneName:          "galiais.online",
+		Status:            "previewed",
+		Provider:          "cloudflare",
+		Summary:           "1 create",
+	})
+	if err != nil {
+		t.Fatalf("expected change set save success, got %v", err)
+	}
+	if changeSet.ZoneID == nil {
+		t.Fatal("expected preview to create or reuse a dns zone")
+	}
+
+	if _, err := repo.Upsert(ctx, domain.Domain{
+		Domain:            "galiais.online",
+		Status:            "active",
+		Visibility:        "private",
+		PublicationStatus: "draft",
+		HealthStatus:      "healthy",
+	}); err != nil {
+		t.Fatalf("expected root domain upsert success, got %v", err)
+	}
+
+	var zone database.DNSZoneRow
+	if err := db.WithContext(ctx).Where("zone_name = ?", "galiais.online").First(&zone).Error; err != nil {
+		t.Fatalf("expected zone lookup success, got %v", err)
+	}
+	if zone.ProviderZoneID != "f367ab93421cca9e55a29f743917252f" {
+		t.Fatalf("expected provider zone id to be preserved, got %q", zone.ProviderZoneID)
+	}
+	if zone.ProviderAccountID == nil || *zone.ProviderAccountID != provider.ID {
+		t.Fatalf("expected provider account binding to be preserved, got %+v", zone)
+	}
+}
+
+func TestMySQLDomainRepositoryReusesSameZoneForRepeatedPreviewAfterRootDomainUpsert(t *testing.T) {
+	db := mustOpenTestMySQL(t)
+	ctx := context.Background()
+
+	mustResetPersistenceTables(t, db)
+	mustEnsureSchema(t, db)
+
+	repo := domain.NewMySQLRepository(db)
+	provider, err := repo.CreateProviderAccount(ctx, domain.ProviderAccount{
+		Provider:     "cloudflare",
+		OwnerType:    "platform",
+		DisplayName:  "Ops Cloudflare",
+		AuthType:     "api_token",
+		Status:       "healthy",
+		Capabilities: []string{"zones.read", "dns.write"},
+	})
+	if err != nil {
+		t.Fatalf("expected provider create success, got %v", err)
+	}
+
+	firstPreview, err := repo.SaveDNSChangeSet(ctx, domain.DNSChangeSet{
+		ProviderAccountID: provider.ID,
+		ProviderZoneID:    "f367ab93421cca9e55a29f743917252f",
+		ZoneName:          "galiais.online",
+		Status:            "previewed",
+		Provider:          "cloudflare",
+		Summary:           "1 create",
+	})
+	if err != nil {
+		t.Fatalf("expected first preview save success, got %v", err)
+	}
+	if firstPreview.ZoneID == nil {
+		t.Fatal("expected first preview to create or reuse a dns zone")
+	}
+
+	if _, err := repo.Upsert(ctx, domain.Domain{
+		Domain:            "galiais.online",
+		Status:            "active",
+		Visibility:        "private",
+		PublicationStatus: "draft",
+		HealthStatus:      "healthy",
+	}); err != nil {
+		t.Fatalf("expected root domain upsert success, got %v", err)
+	}
+
+	secondPreview, err := repo.SaveDNSChangeSet(ctx, domain.DNSChangeSet{
+		ProviderAccountID: provider.ID,
+		ProviderZoneID:    "f367ab93421cca9e55a29f743917252f",
+		ZoneName:          "galiais.online",
+		Status:            "previewed",
+		Provider:          "cloudflare",
+		Summary:           "1 update",
+	})
+	if err != nil {
+		t.Fatalf("expected second preview save success, got %v", err)
+	}
+	if secondPreview.ZoneID == nil {
+		t.Fatal("expected second preview to resolve a dns zone")
+	}
+	if *secondPreview.ZoneID != *firstPreview.ZoneID {
+		t.Fatalf("expected repeated preview to reuse same zone id, got first=%d second=%d", *firstPreview.ZoneID, *secondPreview.ZoneID)
+	}
+
+	var zoneCount int64
+	if err := db.WithContext(ctx).Model(&database.DNSZoneRow{}).Where("zone_name = ?", "galiais.online").Count(&zoneCount).Error; err != nil {
+		t.Fatalf("expected zone count lookup success, got %v", err)
+	}
+	if zoneCount != 1 {
+		t.Fatalf("expected exactly one dns zone row for galiais.online, got %d", zoneCount)
+	}
+}

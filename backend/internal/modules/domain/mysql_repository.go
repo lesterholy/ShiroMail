@@ -3,7 +3,6 @@ package domain
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 
 	"gorm.io/gorm"
@@ -55,13 +54,12 @@ func (r *MySQLRepository) ListAccessibleActive(ctx context.Context, userID uint6
 
 func (r *MySQLRepository) GetActiveByID(ctx context.Context, id uint64) (Domain, error) {
 	var row database.DomainRow
-	if err := r.db.WithContext(ctx).
-		Where("id = ? AND status = ?", id, "active").
-		First(&row).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return Domain{}, ErrDomainNotFound
-		}
+	found, err := findFirstRow(ctx, r.db, &row, "id = ? AND status = ?", id, "active")
+	if err != nil {
 		return Domain{}, err
+	}
+	if !found {
+		return Domain{}, ErrDomainNotFound
 	}
 	items, err := r.hydrateDomains(ctx, []database.DomainRow{row})
 	if err != nil {
@@ -83,13 +81,12 @@ func (r *MySQLRepository) GetAccessibleActiveByID(ctx context.Context, userID ui
 
 func (r *MySQLRepository) FindByDomain(ctx context.Context, hostname string) (Domain, error) {
 	var row database.DomainRow
-	if err := r.db.WithContext(ctx).
-		Where("domain = ?", hostname).
-		First(&row).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return Domain{}, ErrDomainNotFound
-		}
+	found, err := findFirstRow(ctx, r.db, &row, "domain = ?", hostname)
+	if err != nil {
 		return Domain{}, err
+	}
+	if !found {
+		return Domain{}, ErrDomainNotFound
 	}
 	items, err := r.hydrateDomains(ctx, []database.DomainRow{row})
 	if err != nil {
@@ -121,21 +118,21 @@ func (r *MySQLRepository) Upsert(ctx context.Context, item Domain) (Domain, erro
 	var existing database.DomainRow
 	exists := false
 	if item.ID != 0 {
-		err := tx.Where("id = ?", item.ID).First(&existing).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		found, err := findFirstRow(ctx, tx, &existing, "id = ?", item.ID)
+		if err != nil {
 			tx.Rollback()
 			return Domain{}, err
 		}
-		exists = err == nil
+		exists = found
 	}
 
 	if !exists {
-		err := tx.Where("domain = ?", item.Domain).First(&existing).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		found, err := findFirstRow(ctx, tx, &existing, "domain = ?", item.Domain)
+		if err != nil {
 			tx.Rollback()
 			return Domain{}, err
 		}
-		exists = err == nil
+		exists = found
 	}
 
 	if exists {
@@ -179,11 +176,12 @@ func (r *MySQLRepository) Upsert(ctx context.Context, item Domain) (Domain, erro
 
 func (r *MySQLRepository) DeleteDomain(ctx context.Context, id uint64) error {
 	var row database.DomainRow
-	if err := r.db.WithContext(ctx).First(&row, "id = ?", id).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrDomainNotFound
-		}
+	found, err := findFirstRow(ctx, r.db, &row, "id = ?", id)
+	if err != nil {
 		return err
+	}
+	if !found {
+		return ErrDomainNotFound
 	}
 
 	tx := r.db.WithContext(ctx).Begin()
@@ -220,11 +218,12 @@ func (r *MySQLRepository) ListProviderAccounts(ctx context.Context) ([]ProviderA
 
 func (r *MySQLRepository) GetProviderAccountByID(ctx context.Context, id uint64) (ProviderAccount, error) {
 	var row database.ProviderAccountRow
-	if err := r.db.WithContext(ctx).First(&row, "id = ?", id).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ProviderAccount{}, ErrProviderAccountNotFound
-		}
+	found, err := findFirstRow(ctx, r.db, &row, "id = ?", id)
+	if err != nil {
 		return ProviderAccount{}, err
+	}
+	if !found {
+		return ProviderAccount{}, ErrProviderAccountNotFound
 	}
 	return mapProviderAccountRow(row), nil
 }
@@ -257,11 +256,12 @@ func (r *MySQLRepository) UpdateProviderAccount(ctx context.Context, item Provid
 	}
 
 	var existing database.ProviderAccountRow
-	if err := r.db.WithContext(ctx).First(&existing, "id = ?", item.ID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ProviderAccount{}, ErrProviderAccountNotFound
-		}
+	found, err := findFirstRow(ctx, r.db, &existing, "id = ?", item.ID)
+	if err != nil {
 		return ProviderAccount{}, err
+	}
+	if !found {
+		return ProviderAccount{}, ErrProviderAccountNotFound
 	}
 
 	updates := map[string]any{
@@ -310,11 +310,12 @@ func (r *MySQLRepository) CountActive(ctx context.Context) int {
 
 func (r *MySQLRepository) getByID(ctx context.Context, id uint64) (Domain, error) {
 	var row database.DomainRow
-	if err := r.db.WithContext(ctx).First(&row, "id = ?", id).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return Domain{}, ErrDomainNotFound
-		}
+	found, err := findFirstRow(ctx, r.db, &row, "id = ?", id)
+	if err != nil {
 		return Domain{}, err
+	}
+	if !found {
+		return Domain{}, ErrDomainNotFound
 	}
 	items, err := r.hydrateDomains(ctx, []database.DomainRow{row})
 	if err != nil {
@@ -460,12 +461,12 @@ func upsertDNSZoneBinding(ctx context.Context, db *gorm.DB, row database.DomainR
 	}
 
 	var existing database.DNSZoneRow
-	err := db.WithContext(ctx).Where("zone_name = ?", rootDomain).First(&existing).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	found, err := findFirstRow(ctx, db, &existing, "zone_name = ?", rootDomain)
+	if err != nil {
 		return err
 	}
 
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	if !found {
 		return db.WithContext(ctx).Create(&values).Error
 	}
 
@@ -475,13 +476,13 @@ func upsertDNSZoneBinding(ctx context.Context, db *gorm.DB, row database.DomainR
 		"publication_status": values.PublicationStatus,
 		"verification_score": values.VerificationScore,
 		"health_status":      values.HealthStatus,
-		"provider_zone_id":   values.ProviderZoneID,
 		"owner_user_id":      values.OwnerUserID,
 	}
-	if providerAccountID == nil {
-		updates["provider_account_id"] = nil
-	} else {
+	if providerAccountID != nil {
 		updates["provider_account_id"] = *providerAccountID
+	}
+	if strings.TrimSpace(existing.ProviderZoneID) == "" {
+		updates["provider_zone_id"] = values.ProviderZoneID
 	}
 	return db.WithContext(ctx).Model(&database.DNSZoneRow{}).Where("id = ?", existing.ID).Updates(updates).Error
 }
