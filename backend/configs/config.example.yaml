@@ -1,0 +1,21 @@
+app:
+  port: 8080
+mysql:
+  dsn: root:root@tcp(mysql:3306)/shiro_email?parseTime=true
+redis:
+  addr: redis:6379
+jwt:
+  secret: dev-secret
+providers:
+  cloudflare_api_base_url: https://api.cloudflare.com/client/v4
+  spaceship_api_base_url: https://spaceship.dev/api
+legacy_mail_sync:
+  api_url: http://legacy-mail-sync:9000
+  sync_enabled: false
+mail:
+  storage_path: ./data/mail
+smtp:
+  enabled: true
+  listen_addr: 0.0.0.0:2525
+  hostname: shiro.local
+  max_bytes: 10485760

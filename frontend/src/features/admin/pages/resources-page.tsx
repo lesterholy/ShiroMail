@@ -1,0 +1,195 @@
+import { useQuery } from "@tanstack/react-query";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  WorkspaceBadge,
+  WorkspaceEmpty,
+  WorkspaceListRow,
+  WorkspacePage,
+  WorkspacePanel,
+} from "@/components/layout/workspace-ui";
+import {
+  fetchAdminAudit,
+  fetchAdminConfigs,
+  fetchAdminDomainProviders,
+  fetchAdminJobs,
+} from "../api";
+import { formatDateTime } from "../../user/pages/shared";
+
+export function AdminResourcesPage() {
+  const providersQuery = useQuery({
+    queryKey: ["admin-domain-providers"],
+    queryFn: fetchAdminDomainProviders,
+  });
+  const configsQuery = useQuery({
+    queryKey: ["admin-configs"],
+    queryFn: fetchAdminConfigs,
+  });
+  const jobsQuery = useQuery({ queryKey: ["admin-jobs"], queryFn: fetchAdminJobs });
+  const auditQuery = useQuery({ queryKey: ["admin-audit"], queryFn: fetchAdminAudit });
+
+  const providerItems = providersQuery.data ?? [];
+  const configItems = configsQuery.data ?? [];
+  const jobItems = jobsQuery.data ?? [];
+  const auditItems = (auditQuery.data ?? []).slice(0, 6);
+
+  return (
+    <WorkspacePage>
+      <WorkspacePanel description="集中查看核心资源库存、运行任务和最近审计活动。" title="资源仓库">
+        <div className="grid gap-4 xl:grid-cols-3">
+          <ResourceSummaryCard
+            description="DNS Provider 账号"
+            title="Provider 账号"
+            value={providerItems.length}
+          />
+          <ResourceSummaryCard
+            description="系统配置项"
+            title="配置注册表"
+            value={configItems.length}
+          />
+          <ResourceSummaryCard
+            description="后台任务"
+            title="任务队列"
+            value={jobItems.length}
+          />
+        </div>
+
+        <div className="grid gap-4 xl:grid-cols-2">
+          <Card className="border-border/60 bg-card/92 shadow-none">
+            <CardContent className="space-y-3 py-4">
+              <div className="space-y-1">
+                <div className="text-sm font-medium">Provider 账号</div>
+                <p className="text-sm leading-6 text-muted-foreground">
+                  展示平台当前接入的域名供应商账号与能力集。
+                </p>
+              </div>
+              {providerItems.length ? (
+                <div className="space-y-3">
+                  {providerItems.slice(0, 5).map((item) => (
+                    <WorkspaceListRow
+                      description={`${item.provider} · ${item.capabilities.length} capabilities`}
+                      key={item.id}
+                      meta={
+                        <>
+                          <WorkspaceBadge>{item.status}</WorkspaceBadge>
+                          <span>{formatDateTime(item.updatedAt)}</span>
+                        </>
+                      }
+                      title={item.displayName}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <WorkspaceEmpty description="当前还没有接入任何 Provider 账号。" title="暂无 Provider 账号" />
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-border/60 bg-card/92 shadow-none">
+            <CardContent className="space-y-3 py-4">
+              <div className="space-y-1">
+                <div className="text-sm font-medium">配置注册表</div>
+                <p className="text-sm leading-6 text-muted-foreground">
+                  最近更新过的配置项会优先展示在这里，便于快速回看。
+                </p>
+              </div>
+              {configItems.length ? (
+                <div className="space-y-3">
+                  {configItems.slice(0, 5).map((item) => (
+                    <WorkspaceListRow
+                      description={`updated by #${item.updatedBy}`}
+                      key={item.key}
+                      meta={<span>{formatDateTime(item.updatedAt)}</span>}
+                      title={item.key}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <WorkspaceEmpty description="当前还没有可展示的配置项。" title="暂无配置项" />
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-border/60 bg-card/92 shadow-none">
+            <CardContent className="space-y-3 py-4">
+              <div className="space-y-1">
+                <div className="text-sm font-medium">任务队列</div>
+                <p className="text-sm leading-6 text-muted-foreground">
+                  观察任务最近状态与异常，快速定位 worker 与同步链路问题。
+                </p>
+              </div>
+              {jobItems.length ? (
+                <div className="space-y-3">
+                  {jobItems.slice(0, 5).map((item) => (
+                    <WorkspaceListRow
+                      description={item.errorMessage || "无异常"}
+                      key={item.id}
+                      meta={
+                        <>
+                          <WorkspaceBadge>{item.status}</WorkspaceBadge>
+                          <span>{formatDateTime(item.createdAt)}</span>
+                        </>
+                      }
+                      title={item.jobType}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <WorkspaceEmpty description="当前没有任务记录。" title="暂无任务" />
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-border/60 bg-card/92 shadow-none">
+            <CardContent className="space-y-3 py-4">
+              <div className="space-y-1">
+                <div className="text-sm font-medium">最近审计活动</div>
+                <p className="text-sm leading-6 text-muted-foreground">
+                  保留最近的后台资源变更与操作轨迹，方便排障与回溯。
+                </p>
+              </div>
+              {auditItems.length ? (
+                <div className="space-y-3">
+                  {auditItems.map((item) => (
+                    <WorkspaceListRow
+                      description={`${item.resourceType} / ${item.resourceId}`}
+                      key={item.id}
+                      meta={
+                        <>
+                          <span>{formatDateTime(item.createdAt)}</span>
+                          <WorkspaceBadge variant="outline">actor #{item.actorUserId}</WorkspaceBadge>
+                        </>
+                      }
+                      title={item.action}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <WorkspaceEmpty description="当前没有可展示的审计记录。" title="暂无审计记录" />
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </WorkspacePanel>
+    </WorkspacePage>
+  );
+}
+
+function ResourceSummaryCard({
+  title,
+  description,
+  value,
+}: {
+  title: string;
+  description: string;
+  value: number;
+}) {
+  return (
+    <Card className="border-border/60 bg-card/92 shadow-none">
+      <CardContent className="space-y-2 py-4">
+        <div className="text-sm font-medium">{title}</div>
+        <div className="text-2xl font-semibold tracking-tight">{value}</div>
+        <p className="text-sm leading-6 text-muted-foreground">{description}</p>
+      </CardContent>
+    </Card>
+  );
+}

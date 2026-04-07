@@ -1,0 +1,222 @@
+package system
+
+import (
+	"context"
+	"sort"
+	"sync"
+	"time"
+)
+
+type DomainPublicPoolPolicy struct {
+	RequiresReview bool `json:"requiresReview"`
+}
+
+type ConfigEntry struct {
+	Key       string         `json:"key"`
+	Value     map[string]any `json:"value"`
+	UpdatedBy uint64         `json:"updatedBy"`
+	UpdatedAt time.Time      `json:"updatedAt"`
+}
+
+type SettingsSection struct {
+	Key         string        `json:"key"`
+	Title       string        `json:"title"`
+	Description string        `json:"description"`
+	Items       []ConfigEntry `json:"items"`
+}
+
+type JobRecord struct {
+	ID           uint64    `json:"id"`
+	JobType      string    `json:"jobType"`
+	Status       string    `json:"status"`
+	ErrorMessage string    `json:"errorMessage,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
+type AuditLog struct {
+	ID           uint64         `json:"id"`
+	ActorUserID  uint64         `json:"actorUserId"`
+	Action       string         `json:"action"`
+	ResourceType string         `json:"resourceType"`
+	ResourceID   string         `json:"resourceId"`
+	Detail       map[string]any `json:"detail"`
+	CreatedAt    time.Time      `json:"createdAt"`
+}
+
+type MailDeliveryTestResult struct {
+	Status    string `json:"status"`
+	Recipient string `json:"recipient"`
+}
+
+type ConfigRepository interface {
+	List(ctx context.Context) ([]ConfigEntry, error)
+	Upsert(ctx context.Context, key string, value map[string]any, actorID uint64) (ConfigEntry, error)
+	Delete(ctx context.Context, key string) error
+}
+
+type JobRepository interface {
+	List(ctx context.Context) ([]JobRecord, error)
+	Create(ctx context.Context, jobType string, status string, errorMessage string) (JobRecord, error)
+	CountFailed(ctx context.Context) int
+}
+
+type AuditRepository interface {
+	List(ctx context.Context) ([]AuditLog, error)
+	Create(ctx context.Context, actorID uint64, action string, resourceType string, resourceID string, detail map[string]any) (AuditLog, error)
+}
+
+type MailDeliveryTester interface {
+	SendTestMail(ctx context.Context, to string) error
+}
+
+type MemoryConfigRepository struct {
+	mu      sync.RWMutex
+	records map[string]ConfigEntry
+}
+
+type MemoryJobRepository struct {
+	mu      sync.RWMutex
+	nextID  uint64
+	records []JobRecord
+}
+
+type MemoryAuditRepository struct {
+	mu      sync.RWMutex
+	nextID  uint64
+	records []AuditLog
+}
+
+func NewMemoryConfigRepository() *MemoryConfigRepository {
+	return &MemoryConfigRepository{
+		records: map[string]ConfigEntry{},
+	}
+}
+
+func NewMemoryJobRepository() *MemoryJobRepository {
+	return &MemoryJobRepository{
+		nextID: 1,
+	}
+}
+
+func NewMemoryAuditRepository() *MemoryAuditRepository {
+	return &MemoryAuditRepository{
+		nextID: 1,
+	}
+}
+
+func (r *MemoryConfigRepository) List(_ context.Context) ([]ConfigEntry, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	items := make([]ConfigEntry, 0, len(r.records))
+	for _, item := range r.records {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Key < items[j].Key
+	})
+	return items, nil
+}
+
+func (r *MemoryConfigRepository) Upsert(_ context.Context, key string, value map[string]any, actorID uint64) (ConfigEntry, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	item := ConfigEntry{
+		Key:       key,
+		Value:     cloneMap(value),
+		UpdatedBy: actorID,
+		UpdatedAt: time.Now(),
+	}
+	r.records[key] = item
+	return item, nil
+}
+
+func (r *MemoryConfigRepository) Delete(_ context.Context, key string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.records, key)
+	return nil
+}
+
+func (r *MemoryJobRepository) List(_ context.Context) ([]JobRecord, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	items := make([]JobRecord, len(r.records))
+	copy(items, r.records)
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].ID > items[j].ID
+	})
+	return items, nil
+}
+
+func (r *MemoryJobRepository) Create(_ context.Context, jobType string, status string, errorMessage string) (JobRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	item := JobRecord{
+		ID:           r.nextID,
+		JobType:      jobType,
+		Status:       status,
+		ErrorMessage: errorMessage,
+		CreatedAt:    time.Now(),
+	}
+	r.nextID++
+	r.records = append(r.records, item)
+	return item, nil
+}
+
+func (r *MemoryJobRepository) CountFailed(_ context.Context) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	count := 0
+	for _, item := range r.records {
+		if item.Status == "failed" {
+			count++
+		}
+	}
+	return count
+}
+
+func (r *MemoryAuditRepository) List(_ context.Context) ([]AuditLog, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	items := make([]AuditLog, len(r.records))
+	copy(items, r.records)
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].ID > items[j].ID
+	})
+	return items, nil
+}
+
+func (r *MemoryAuditRepository) Create(_ context.Context, actorID uint64, action string, resourceType string, resourceID string, detail map[string]any) (AuditLog, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	item := AuditLog{
+		ID:           r.nextID,
+		ActorUserID:  actorID,
+		Action:       action,
+		ResourceType: resourceType,
+		ResourceID:   resourceID,
+		Detail:       cloneMap(detail),
+		CreatedAt:    time.Now(),
+	}
+	r.nextID++
+	r.records = append(r.records, item)
+	return item, nil
+}
+
+func cloneMap(input map[string]any) map[string]any {
+	if input == nil {
+		return map[string]any{}
+	}
+	output := make(map[string]any, len(input))
+	for key, value := range input {
+		output[key] = value
+	}
+	return output
+}

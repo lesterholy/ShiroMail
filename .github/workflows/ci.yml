@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  backend:
+    name: Backend (Go)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: shiro_email
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping -proot" --health-interval=10s --health-timeout=5s --health-retries=5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: --health-cmd="redis-cli ping" --health-interval=10s --health-timeout=5s --health-retries=5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: backend/go.sum
+
+      - name: Build
+        working-directory: backend
+        run: go build -mod=vendor ./...
+
+      - name: Unit tests
+        working-directory: backend
+        run: go test -mod=vendor -v -count=1 ./internal/...
+
+      - name: Wait for integration services
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for i in {1..30}; do
+            if MYSQL_PWD=root mysqladmin ping -h127.0.0.1 -P3306 -uroot --silent; then
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "MySQL did not become ready in time"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          for i in {1..30}; do
+            if python - <<'PY'
+import socket
+socket.create_connection(("127.0.0.1", 6379), timeout=2).close()
+PY
+            then
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Redis did not become ready in time"
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Integration tests
+        working-directory: backend
+        env:
+          MYSQL_DSN: root:root@tcp(127.0.0.1:3306)/shiro_email?parseTime=true
+          REDIS_ADDR: 127.0.0.1:6379
+          JWT_SECRET: ci-test-secret
+          SHIRO_TEST_MYSQL_DSN: root:root@tcp(127.0.0.1:3306)/shiro_email?parseTime=true
+          SHIRO_TEST_REDIS_ADDR: 127.0.0.1:6379
+        run: go test -mod=vendor -v -count=1 ./tests/...
+
+  frontend:
+    name: Frontend (React)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Unit tests
+        working-directory: frontend
+        run: npm run test
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
