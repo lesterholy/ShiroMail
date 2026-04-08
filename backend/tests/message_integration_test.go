@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"shiro-email/backend/internal/modules/ingest"
 	"shiro-email/backend/internal/modules/mailbox"
 	"shiro-email/backend/internal/modules/message"
+	"shiro-email/backend/internal/modules/system"
 )
 
 func TestListMailboxMessages(t *testing.T) {
@@ -129,7 +132,7 @@ func TestCleanupExpiredMailboxData(t *testing.T) {
 		t.Fatalf("expected seeded message, got %v", err)
 	}
 
-	if err := jobs.RunCleanupExpiredJob(context.Background(), mailboxRepo, messageRepo); err != nil {
+	if err := jobs.RunCleanupExpiredJob(context.Background(), mailboxRepo, messageRepo, nil, nil); err != nil {
 		t.Fatalf("expected cleanup success, got %v", err)
 	}
 
@@ -147,6 +150,97 @@ func TestCleanupExpiredMailboxData(t *testing.T) {
 	}
 	if len(expiredIDs) != 0 {
 		t.Fatalf("expected expired mailbox to be marked and removed from pending cleanup, got %v", expiredIDs)
+	}
+}
+
+func TestCleanupExpiredMailboxDataRemovesExpiredStoredFiles(t *testing.T) {
+	ctx := context.Background()
+	mailboxRepo := mailbox.NewMemoryRepository()
+	messageRepo := message.NewMemoryRepository()
+	configRepo := system.NewMemoryConfigRepository()
+	storageRoot := t.TempDir()
+	storage, err := ingest.NewLocalFileStorage(storageRoot)
+	if err != nil {
+		t.Fatalf("create storage: %v", err)
+	}
+
+	if _, err := configRepo.Upsert(ctx, system.ConfigKeyMailInboundPolicy, map[string]any{
+		"retainRawDays":             1,
+		"allowCatchAll":             false,
+		"requireExistingMailbox":    true,
+		"maxAttachmentSizeMB":       15,
+		"rejectExecutableFiles":     true,
+		"enableSpamScanningPreview": false,
+	}, 0); err != nil {
+		t.Fatalf("upsert inbound policy config: %v", err)
+	}
+
+	expiredMailbox, err := mailboxRepo.Create(ctx, mailbox.Mailbox{
+		UserID:    1,
+		DomainID:  1,
+		Domain:    "example.test",
+		LocalPart: "expired-cleanup",
+		Address:   "expired-cleanup@example.test",
+		Status:    "active",
+		ExpiresAt: time.Now().Add(-1 * time.Hour),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("create expired mailbox: %v", err)
+	}
+
+	rawKey, err := storage.StoreRaw(ctx, expiredMailbox.Address, "cleanup-message", []byte("raw-body"))
+	if err != nil {
+		t.Fatalf("store raw: %v", err)
+	}
+	attachment, err := storage.StoreAttachment(ctx, expiredMailbox.Address, "cleanup-message", ingest.InboundAttachment{
+		FileName:    "note.txt",
+		ContentType: "text/plain",
+		Content:     []byte("attachment-body"),
+		SizeBytes:   int64(len("attachment-body")),
+	}, 0)
+	if err != nil {
+		t.Fatalf("store attachment: %v", err)
+	}
+
+	if err := messageRepo.StoreInbound(ctx, expiredMailbox.ID, ingest.StoredInboundMessage{
+		SourceKind:      "smtp",
+		SourceMessageID: "cleanup-message",
+		MailboxAddress:  expiredMailbox.Address,
+		FromAddr:        "cleanup@example.com",
+		ToAddr:          expiredMailbox.Address,
+		Subject:         "Cleanup files",
+		TextPreview:     "cleanup",
+		TextBody:        "cleanup",
+		RawStorageKey:   rawKey,
+		HasAttachments:  true,
+		SizeBytes:       128,
+		ReceivedAt:      time.Now().Add(-48 * time.Hour),
+		Attachments:     []ingest.StoredAttachment{attachment},
+	}); err != nil {
+		t.Fatalf("store inbound message: %v", err)
+	}
+
+	oldTime := time.Now().Add(-72 * time.Hour)
+	rawPath := filepath.Join(storageRoot, filepath.FromSlash(rawKey))
+	attachmentPath := filepath.Join(storageRoot, filepath.FromSlash(attachment.StorageKey))
+	if err := os.Chtimes(rawPath, oldTime, oldTime); err != nil {
+		t.Fatalf("age raw file: %v", err)
+	}
+	if err := os.Chtimes(attachmentPath, oldTime, oldTime); err != nil {
+		t.Fatalf("age attachment file: %v", err)
+	}
+
+	if err := jobs.RunCleanupExpiredJob(ctx, mailboxRepo, messageRepo, configRepo, storage); err != nil {
+		t.Fatalf("cleanup expired mailbox data: %v", err)
+	}
+
+	if _, err := os.Stat(rawPath); !os.IsNotExist(err) {
+		t.Fatalf("expected expired raw file removed, got %v", err)
+	}
+	if _, err := os.Stat(attachmentPath); !os.IsNotExist(err) {
+		t.Fatalf("expected expired attachment removed, got %v", err)
 	}
 }
 

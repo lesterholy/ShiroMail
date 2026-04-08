@@ -94,6 +94,8 @@ export type MailDeliverySettings = {
   password: string;
   fromAddress: string;
   fromName: string;
+  transportMode: string;
+  insecureSkipVerify: boolean;
 };
 
 export type MailInboundSettings = {
@@ -103,6 +105,27 @@ export type MailInboundSettings = {
   maxAttachmentSizeMB: number;
   rejectExecutableFiles: boolean;
   enableSpamScanningPreview: boolean;
+};
+
+export type APILimitsSettings = {
+  enabled: boolean;
+  identityMode: string;
+  anonymousRPM: number;
+  authenticatedRPM: number;
+  authRPM: number;
+  loginRPM: number;
+  registerRPM: number;
+  refreshRPM: number;
+  forgotPasswordRPM: number;
+  resetPasswordRPM: number;
+  emailVerificationResendRPM: number;
+  emailVerificationConfirmRPM: number;
+  oauthStartRPM: number;
+  oauthCallbackRPM: number;
+  login2faVerifyRPM: number;
+  mailboxWriteRPM: number;
+  strictIpEnabled: boolean;
+  strictIpRPM: number;
 };
 
 export type DomainPolicySettings = {

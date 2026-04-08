@@ -1,8 +1,13 @@
-import { BookOpen, Globe, KeyRound, Mail, ShieldCheck } from "lucide-react";
+import { Activity, BookOpen, Globe, KeyRound, Mail, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { PublicBottomCta, PublicPageHero, PublicShell } from "../components/public-shell";
 import { PublicChecklist, PublicFeatureCard, PublicInfoCard, PublicSection } from "../components/public-ui";
-import { apiReferenceSections, runtimeCapabilities } from "../docs-reference";
+import {
+  apiReferenceSections,
+  runtimeCapabilities,
+  smtpDiagnosticExamples,
+  smtpDiagnosticFieldGuides,
+} from "../docs-reference";
 
 const docsSections = [
   {
@@ -24,6 +29,11 @@ const docsSections = [
     title: "API Key 与 Webhook",
     body: "用户 API Key、域名绑定策略、Webhook 配置与控制台补充接口。",
     icon: KeyRound,
+  },
+  {
+    title: "SMTP 诊断",
+    body: "测试发信、结构化错误码、reject 计数与 inbound spool 观察。",
+    icon: Activity,
   },
   {
     title: "控制台文档",
@@ -121,6 +131,39 @@ export function DocsLandingPage() {
                   </tbody>
                 </table>
               </div>
+            </div>
+          ))}
+        </div>
+      </PublicSection>
+
+      <PublicSection
+        description="下面这几段是当前后端实际返回的 SMTP 诊断形状，适合直接给运维、前端或大模型理解。"
+        title="SMTP Diagnostics Examples"
+      >
+        <div className="space-y-4">
+          {smtpDiagnosticExamples.map((example) => (
+            <div className="rounded-xl border border-border/60 bg-card/92 p-4" key={example.title}>
+              <div className="space-y-1">
+                <h2 className="text-base font-semibold tracking-tight">{example.title}</h2>
+                <p className="text-sm leading-6 text-muted-foreground">{example.description}</p>
+              </div>
+              <pre className="mt-4 overflow-x-auto rounded-xl border border-border/60 bg-muted/30 p-4 text-xs leading-6 text-foreground">
+                <code>{example.payload}</code>
+              </pre>
+            </div>
+          ))}
+        </div>
+      </PublicSection>
+
+      <PublicSection
+        description="这一组字段就是 SMTP 诊断相关接口里最关键的语义层，读懂后基本就能直接接 UI、脚本或 LLM。"
+        title="SMTP Diagnostics Field Guide"
+      >
+        <div className="grid gap-4 md:grid-cols-2">
+          {smtpDiagnosticFieldGuides.map((field) => (
+            <div className="rounded-xl border border-border/60 bg-card/92 p-4" key={field.name}>
+              <div className="font-mono text-sm font-semibold text-foreground">{field.name}</div>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">{field.meaning}</p>
             </div>
           ))}
         </div>

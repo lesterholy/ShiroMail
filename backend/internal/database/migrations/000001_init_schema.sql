@@ -446,6 +446,22 @@ CREATE TABLE IF NOT EXISTS user_balance_entries (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS inbound_message_spool (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  mail_from VARCHAR(255) NOT NULL,
+  recipients_json JSON NOT NULL,
+  target_mailbox_ids_json JSON NOT NULL,
+  raw_message LONGBLOB NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  error_message TEXT NULL,
+  attempt_count INT NOT NULL DEFAULT 0,
+  max_attempts INT NOT NULL DEFAULT 3,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  processed_at DATETIME NULL
+);
+
 CREATE INDEX idx_mailboxes_user_status_expires ON mailboxes (user_id, status, expires_at);
 CREATE INDEX idx_messages_mailbox_received ON messages (mailbox_id, received_at);
 CREATE INDEX idx_feedback_user_created ON feedback_tickets (user_id, created_at);
@@ -461,5 +477,6 @@ CREATE INDEX idx_dns_zones_owner_visibility ON dns_zones (owner_user_id, visibil
 CREATE INDEX idx_domain_nodes_zone_parent ON domain_nodes (zone_id, parent_node_id, status);
 CREATE UNIQUE INDEX uk_domain_verification_profile ON domain_verifications (zone_id, node_id, verification_type);
 CREATE INDEX idx_api_key_domain_bindings_api_key ON api_key_domain_bindings (api_key_id, access_level);
+CREATE INDEX idx_inbound_message_spool_status_id ON inbound_message_spool (status, id);
 
 CREATE FULLTEXT INDEX ft_messages_search ON messages (from_addr, subject, text_preview);

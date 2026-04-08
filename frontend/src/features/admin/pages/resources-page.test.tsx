@@ -46,9 +46,16 @@ describe("AdminResourcesPage", () => {
     vi.mocked(fetchAdminJobs).mockResolvedValue([
       {
         id: 1,
-        jobType: "mail_ingest_listener",
-        status: "ok",
-        errorMessage: "",
+        jobType: "inbound_spool",
+        status: "failed",
+        errorMessage: "temporary parse failure",
+        diagnostic: {
+          code: "temporary_parse_failure",
+          title: "Temporary Parse Failure",
+          description:
+            "The worker failed while parsing MIME content or message structure. This is often retryable after transient input or runtime issues clear.",
+          retryable: true,
+        },
         createdAt: "2026-04-03T10:15:00Z",
       },
     ]);
@@ -56,10 +63,16 @@ describe("AdminResourcesPage", () => {
       {
         id: 1,
         actorUserId: 3,
-        action: "admin.config.upsert",
+        action: "admin.mail_delivery.test_failed",
         resourceType: "config",
-        resourceId: "platform",
-        detail: { brand: "Shiro Email" },
+        resourceId: "mail.delivery",
+        detail: {
+          recipient: "ops@example.com",
+          code: "starttls_unavailable",
+          stage: "tls",
+          hint: "The server does not advertise STARTTLS. Switch to Plain SMTP / SMTPS, or enable STARTTLS on the server.",
+          retryable: false,
+        },
         createdAt: "2026-04-03T10:20:00Z",
       },
     ]);
@@ -87,7 +100,11 @@ describe("AdminResourcesPage", () => {
     expect(await screen.findByText("后台任务")).toBeInTheDocument();
     expect(await screen.findByText("Primary Cloudflare")).toBeInTheDocument();
     expect(await screen.findByText("updated by #3")).toBeInTheDocument();
-    expect(await screen.findByText("mail_ingest_listener")).toBeInTheDocument();
-    expect(await screen.findByText("admin.config.upsert")).toBeInTheDocument();
+    expect(await screen.findByText("inbound_spool")).toBeInTheDocument();
+    expect(await screen.findByText("Temporary Parse Failure")).toBeInTheDocument();
+    expect(await screen.findAllByText("retryable")).not.toHaveLength(0);
+    expect(await screen.findByText("SMTP test failed · starttls_unavailable")).toBeInTheDocument();
+    expect(await screen.findByText(/ops@example.com · stage tls/i)).toBeInTheDocument();
+    expect(await screen.findByText("check config")).toBeInTheDocument();
   });
 });

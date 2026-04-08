@@ -11,6 +11,17 @@ export type ApiReferenceSection = {
   endpoints: ApiEndpointReference[];
 };
 
+export type DocsJSONExample = {
+  title: string;
+  description: string;
+  payload: string;
+};
+
+export type DocsFieldGuide = {
+  name: string;
+  meaning: string;
+};
+
 export const apiReferenceSections: ApiReferenceSection[] = [
   {
     title: "认证与账户",
@@ -58,6 +69,16 @@ export const apiReferenceSections: ApiReferenceSection[] = [
     ],
   },
   {
+    title: "SMTP 投递与诊断",
+    description: "覆盖后台 SMTP 测试发信、入站 spool 队列、拒收原因与实时指标，便于排查真实收发链路。",
+    endpoints: [
+      { method: "POST", path: "/api/v1/admin/configs/mail.delivery/test", auth: "管理员", description: "发送一封 SMTP 测试邮件；失败时会返回 stage、code、hint、retryable 等结构化诊断字段。" },
+      { method: "GET", path: "/api/v1/admin/jobs/inbound-spool", auth: "管理员", description: "分页读取入站 spool 队列、状态汇总和失败原因聚合。" },
+      { method: "POST", path: "/api/v1/admin/jobs/inbound-spool/:id/retry", auth: "管理员", description: "将单条 failed spool 项重新放回待消费队列。" },
+      { method: "GET", path: "/api/v1/admin/jobs/smtp-metrics", auth: "管理员", description: "读取 SMTP 会话、拒收、accepted、spool worker 的实时内存快照。" },
+    ],
+  },
+  {
     title: "API Key、Webhook 与控制台补充接口",
     description: "已登录用户可直接在控制台管理 API Key、Webhook、文档、余额与设置。",
     endpoints: [
@@ -77,5 +98,82 @@ export const runtimeCapabilities = [
   "账户体系支持账号密码、OAuth 与 TOTP 两步验证。",
   "域名管理支持根域名、子域名、DNS 服务商、校验与变更应用。",
   "邮箱链路支持创建、续期、释放、消息正文、附件和 EML 下载。",
+  "SMTP 后台支持测试发信、结构化诊断、reject 统计与 inbound spool 观察。",
   "控制台支持 API Key、Webhook、文档、余额、公告和管理员治理接口。",
+];
+
+export const smtpDiagnosticExamples: DocsJSONExample[] = [
+  {
+    title: "SMTP test failure payload",
+    description: "管理员在“账户邮件发信”里点测试发信失败时，接口会直接返回结构化诊断字段。",
+    payload: `{
+  "message": "mail delivery TLS handshake failed: server does not advertise STARTTLS",
+  "stage": "tls",
+  "code": "starttls_unavailable",
+  "hint": "The upstream server does not advertise STARTTLS. Switch to SMTPS or plain mode only if your provider explicitly supports it.",
+  "retryable": false
+}`,
+  },
+  {
+    title: "Inbound spool item with diagnostic",
+    description: "任务队列和失败原因聚合现在都会带同一套可读诊断结构，前端无需再自己猜错误文案。",
+    payload: `{
+  "id": 18,
+  "mailFrom": "sender@example.com",
+  "status": "failed",
+  "errorMessage": "temporary parse failure",
+  "diagnostic": {
+    "code": "temporary_parse_failure",
+    "title": "Temporary Parse Failure",
+    "description": "The worker failed while parsing MIME content or message structure. This is often retryable after transient input or runtime issues clear.",
+    "retryable": true
+  }
+}`,
+  },
+  {
+    title: "SMTP metrics rejectedDetails",
+    description: "实时指标除了原始 reject 计数，也会返回按原因展开后的标题、说明与 retryable 元数据。",
+    payload: `{
+  "sessionsStarted": 14,
+  "recipientsAccepted": 21,
+  "rejected": {
+    "attachment_too_large": 2
+  },
+  "rejectedDetails": [
+    {
+      "key": "attachment_too_large",
+      "count": 2,
+      "diagnostic": {
+        "code": "attachment_too_large",
+        "title": "Attachment Too Large",
+        "description": "The message was rejected because at least one attachment exceeded the active inbound size limit.",
+        "retryable": false
+      }
+    }
+  ]
+}`,
+  },
+];
+
+export const smtpDiagnosticFieldGuides: DocsFieldGuide[] = [
+  {
+    name: "diagnostic",
+    meaning: "Human-readable diagnostic object attached to failed spool items and failed background jobs. Includes `title`, `description`, and `retryable`.",
+  },
+  {
+    name: "failureMode",
+    meaning: "Query filter for `/api/v1/admin/jobs/inbound-spool`. Supports `all`, `retryable`, and `non_retryable` to narrow failed spool items.",
+  },
+  {
+    name: "rejectedDetails",
+    meaning: "Expanded view of SMTP reject counters. Each entry keeps the raw key and count, plus a normalized diagnostic payload for UI or automation.",
+  },
+  {
+    name: "retryable",
+    meaning: "Boolean hint for operators and clients. `true` means a retry may succeed after transient conditions clear; `false` usually means the config or target must be fixed first.",
+  },
+  {
+    name: "stage / code / hint",
+    meaning: "Structured fields returned by SMTP test delivery failures. `stage` shows where the failure occurred, `code` is stable for logic, and `hint` is the operator-facing remediation note.",
+  },
 ];

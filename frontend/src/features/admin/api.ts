@@ -79,6 +79,27 @@ export type SettingsSection = {
   items: SettingsSectionItem[];
 };
 
+export type AdminAPILimitsSettings = {
+  enabled: boolean;
+  identityMode: string;
+  anonymousRPM: number;
+  authenticatedRPM: number;
+  authRPM: number;
+  loginRPM: number;
+  registerRPM: number;
+  refreshRPM: number;
+  forgotPasswordRPM: number;
+  resetPasswordRPM: number;
+  emailVerificationResendRPM: number;
+  emailVerificationConfirmRPM: number;
+  oauthStartRPM: number;
+  oauthCallbackRPM: number;
+  login2faVerifyRPM: number;
+  mailboxWriteRPM: number;
+  strictIpEnabled: boolean;
+  strictIpRPM: number;
+};
+
 export type DomainProviderItem = {
   id: number;
   provider: string;
@@ -168,7 +189,68 @@ export type JobItem = {
   jobType: string;
   status: string;
   errorMessage?: string;
+  diagnostic?: SMTPStatusDiagnostic;
   createdAt: string;
+};
+
+export type SMTPStatusDiagnostic = {
+  code?: string;
+  title: string;
+  description: string;
+  retryable: boolean;
+};
+
+export type AdminInboundSpoolItem = {
+  id: number;
+  mailFrom: string;
+  recipients: string[];
+  targetMailboxIds: number[];
+  status: string;
+  errorMessage?: string;
+  diagnostic?: SMTPStatusDiagnostic;
+  attemptCount: number;
+  maxAttempts: number;
+  createdAt: string;
+  updatedAt: string;
+  nextAttemptAt: string;
+  processedAt?: string;
+};
+
+export type AdminInboundSpoolSummary = {
+  total: number;
+  pending: number;
+  processing: number;
+  completed: number;
+  failed: number;
+};
+
+export type AdminInboundSpoolFailureReason = {
+  message: string;
+  count: number;
+  diagnostic?: SMTPStatusDiagnostic;
+};
+
+export type AdminInboundSpoolListResult = {
+  items: AdminInboundSpoolItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  summary: AdminInboundSpoolSummary;
+  failureReasons: AdminInboundSpoolFailureReason[];
+};
+
+export type AdminSMTPMetricsSnapshot = {
+  sessionsStarted: number;
+  recipientsAccepted: number;
+  bytesReceived: number;
+  accepted: Record<string, number>;
+  rejected: Record<string, number>;
+  rejectedDetails?: Array<{
+    key: string;
+    count: number;
+    diagnostic: SMTPStatusDiagnostic;
+  }>;
+  spoolProcessed: Record<string, number>;
 };
 
 export type AuditItem = {
@@ -737,6 +819,13 @@ export async function fetchAdminSettingsSections() {
   return data.items;
 }
 
+export async function fetchAdminAPILimitsSettings() {
+  const { data } = await http.get<AdminAPILimitsSettings>(
+    "/admin/settings/api-limits",
+  );
+  return data;
+}
+
 export async function upsertAdminConfig(
   key: string,
   value: Record<string, unknown>,
@@ -766,6 +855,36 @@ export async function sendAdminMailDeliveryTest(input: { to?: string }) {
 export async function fetchAdminJobs() {
   const { data } = await http.get<{ items: JobItem[] }>("/admin/jobs");
   return data.items;
+}
+
+export async function fetchAdminInboundSpool(input?: {
+  status?: string;
+  failureMode?: string;
+  page?: number;
+  pageSize?: number;
+}) {
+  const { data } = await http.get<AdminInboundSpoolListResult>("/admin/jobs/inbound-spool", {
+    params: {
+      status: input?.status && input.status !== "all" ? input.status : undefined,
+      failureMode:
+        input?.failureMode && input.failureMode !== "all"
+          ? input.failureMode
+          : undefined,
+      page: input?.page ?? 1,
+      pageSize: input?.pageSize ?? 10,
+    },
+  });
+  return data;
+}
+
+export async function retryAdminInboundSpoolItem(id: number) {
+  const { data } = await http.post<AdminInboundSpoolItem>(`/admin/jobs/inbound-spool/${id}/retry`, {});
+  return data;
+}
+
+export async function fetchAdminSMTPMetrics() {
+  const { data } = await http.get<AdminSMTPMetricsSnapshot>("/admin/jobs/smtp-metrics");
+  return data;
 }
 
 export async function fetchAdminAudit() {

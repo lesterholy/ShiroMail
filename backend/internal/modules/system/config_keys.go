@@ -12,5 +12,6 @@ const (
 	ConfigKeyMailSMTP               = "mail.smtp"
 	ConfigKeyMailDelivery           = "mail.delivery"
 	ConfigKeyMailInboundPolicy      = "mail.inbound_policy"
+	ConfigKeyAPILimits              = "api.limits"
 	ConfigKeyDomainPublicPoolPolicy = "domain.public_pool_policy"
 )

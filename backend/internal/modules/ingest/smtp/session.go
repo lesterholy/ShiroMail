@@ -3,6 +3,7 @@ package smtp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"shiro-email/backend/internal/middleware"
 	"shiro-email/backend/internal/modules/ingest"
 	"shiro-email/backend/internal/modules/mailbox"
 )
@@ -57,6 +59,7 @@ func newSession(ctx context.Context, cfg Config, deliver Deliverer, conn net.Con
 
 func (s *session) run() {
 	defer s.conn.Close()
+	middleware.RecordSMTPSessionStarted()
 	s.writeLine(fmt.Sprintf("220 %s Shiro SMTP ready", s.cfg.Hostname))
 
 	for {
@@ -134,6 +137,7 @@ func (s *session) run() {
 						err,
 					)
 					s.writeLine("550 Delivery failed")
+					middleware.RecordSMTPDeliveryRejected("recipient_resolution_failed")
 					s.resetEnvelope()
 					s.state = stateReady
 					continue
@@ -158,10 +162,12 @@ func (s *session) run() {
 					"recipient lookup only accepts active, unexpired local mailboxes",
 				)
 				s.writeLine("550 Relay not permitted")
+				middleware.RecordSMTPDeliveryRejected("recipient_not_found_or_inactive_or_expired")
 				continue
 			}
 			s.recipients = append(s.recipients, strings.ToLower(address))
 			s.targets = append(s.targets, target)
+			middleware.RecordSMTPRecipientAccepted()
 			slog.Info("smtp recipient accepted", "remote", s.conn.RemoteAddr().String(), "recipient", address, "mailboxID", target.ID)
 			s.writeLine("250 Recipient OK")
 		case "DATA":
@@ -186,20 +192,25 @@ func (s *session) handleData() {
 		return
 	}
 	if len(body) > s.cfg.MaxMessageBytes {
+		middleware.RecordSMTPDeliveryRejected("message_too_large")
 		s.writeLine("552 Max message size exceeded")
 		s.resetEnvelope()
 		return
 	}
+	middleware.RecordSMTPDeliveryBytes(len(body))
 	env := ingest.InboundEnvelope{
 		MailFrom:   s.mailFrom,
 		Recipients: append([]string{}, s.recipients...),
 	}
 
-	var deliverErr error
+	var (
+		storedItem ingest.StoredInboundMessage
+		deliverErr error
+	)
 	if resolvedDeliverer, ok := s.deliver.(ResolvedDeliverer); ok && len(s.targets) != 0 {
-		_, deliverErr = resolvedDeliverer.DeliverResolved(s.ctx, env, bytes.NewReader(body), append([]mailbox.Mailbox{}, s.targets...))
+		storedItem, deliverErr = resolvedDeliverer.DeliverResolved(s.ctx, env, bytes.NewReader(body), append([]mailbox.Mailbox{}, s.targets...))
 	} else {
-		_, deliverErr = s.deliver.Deliver(s.ctx, env, bytes.NewReader(body))
+		storedItem, deliverErr = s.deliver.Deliver(s.ctx, env, bytes.NewReader(body))
 	}
 	if deliverErr != nil {
 		if isMailboxLookupFailure(deliverErr) {
@@ -223,14 +234,72 @@ func (s *session) handleData() {
 				deliverErr,
 			)
 			s.writeLine("550 Relay not permitted")
+			middleware.RecordSMTPDeliveryRejected("recipient_not_found_or_inactive_or_expired")
+		} else if ingest.IsRejectionCode(deliverErr, ingest.RejectAttachmentTooLarge) {
+			slog.Info(
+				"smtp delivery rejected by inbound policy",
+				"remote",
+				s.conn.RemoteAddr().String(),
+				"mail_from",
+				s.mailFrom,
+				"recipients",
+				strings.Join(s.recipients, ","),
+				"recipient_count",
+				len(s.recipients),
+				"stage",
+				"data",
+				"reason",
+				"attachment_too_large",
+				"error",
+				deliverErr,
+			)
+			s.writeLine("552 Attachment exceeds policy limit")
+			middleware.RecordSMTPDeliveryRejected("attachment_too_large")
+		} else if ingest.IsRejectionCode(deliverErr, ingest.RejectExecutableAttachment) {
+			slog.Info(
+				"smtp delivery rejected by inbound policy",
+				"remote",
+				s.conn.RemoteAddr().String(),
+				"mail_from",
+				s.mailFrom,
+				"recipients",
+				strings.Join(s.recipients, ","),
+				"recipient_count",
+				len(s.recipients),
+				"stage",
+				"data",
+				"reason",
+				"attachment_type_rejected",
+				"error",
+				deliverErr,
+			)
+			s.writeLine("550 Attachment type rejected")
+			middleware.RecordSMTPDeliveryRejected("attachment_type_rejected")
 		} else {
 			slog.Error("smtp delivery failed", "remote", s.conn.RemoteAddr().String(), "recipients", strings.Join(s.recipients, ","), "error", deliverErr)
 			s.writeLine("451 Failed to store message")
+			middleware.RecordSMTPDeliveryRejected("store_failed")
 		}
 		s.resetEnvelope()
 		return
 	}
-	slog.Info("smtp delivery accepted", "remote", s.conn.RemoteAddr().String(), "recipients", strings.Join(s.recipients, ","), "bytes", len(body))
+	if storedItem.SourceKind == "smtp-spool" {
+		middleware.RecordSMTPDeliveryAccepted("spool")
+		slog.Info(
+			"smtp delivery queued",
+			"remote",
+			s.conn.RemoteAddr().String(),
+			"recipients",
+			strings.Join(s.recipients, ","),
+			"bytes",
+			len(body),
+			"source_message_id",
+			storedItem.SourceMessageID,
+		)
+	} else {
+		middleware.RecordSMTPDeliveryAccepted("direct")
+		slog.Info("smtp delivery accepted", "remote", s.conn.RemoteAddr().String(), "recipients", strings.Join(s.recipients, ","), "bytes", len(body))
+	}
 	s.writeLine("250 Mail accepted for delivery")
 	s.resetEnvelope()
 }
@@ -280,5 +349,5 @@ func parsePathArg(arg string, prefix string) (string, bool) {
 }
 
 func isMailboxLookupFailure(err error) bool {
-	return strings.Contains(strings.ToLower(err.Error()), "mailbox not found")
+	return errors.Is(err, mailbox.ErrMailboxNotFound)
 }

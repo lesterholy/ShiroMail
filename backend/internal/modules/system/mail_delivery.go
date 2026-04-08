@@ -4,14 +4,63 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"html"
 	"mime"
 	"mime/quotedprintable"
+	"net"
 	"net/smtp"
 	"strings"
 	"time"
 )
+
+var smtpSendMailFunc = smtp.SendMail
+var smtpDialTimeoutFunc = func(network string, address string, timeout time.Duration) (net.Conn, error) {
+	return net.DialTimeout(network, address, timeout)
+}
+var smtpDialTLSFunc = func(network string, address string, config *tls.Config) (net.Conn, error) {
+	return tls.Dial(network, address, config)
+}
+
+const mailDeliveryOperationTimeout = 10 * time.Second
+
+type MailDeliveryError struct {
+	Stage string
+	Err   error
+}
+
+func (e *MailDeliveryError) Error() string {
+	if e == nil || e.Err == nil {
+		return "mail delivery failed"
+	}
+	switch e.Stage {
+	case "connect":
+		return fmt.Sprintf("mail delivery connect failed: %s", humanizeMailDeliveryError(e.Err))
+	case "tls":
+		return fmt.Sprintf("mail delivery TLS handshake failed: %s", humanizeMailDeliveryError(e.Err))
+	case "auth":
+		return fmt.Sprintf("mail delivery authentication failed: %s", humanizeMailDeliveryError(e.Err))
+	case "mail_from":
+		return fmt.Sprintf("mail delivery MAIL FROM failed: %s", humanizeMailDeliveryError(e.Err))
+	case "rcpt_to":
+		return fmt.Sprintf("mail delivery RCPT TO failed: %s", humanizeMailDeliveryError(e.Err))
+	case "data":
+		return fmt.Sprintf("mail delivery DATA failed: %s", humanizeMailDeliveryError(e.Err))
+	case "quit":
+		return fmt.Sprintf("mail delivery quit failed: %s", humanizeMailDeliveryError(e.Err))
+	default:
+		return fmt.Sprintf("mail delivery failed: %s", humanizeMailDeliveryError(e.Err))
+	}
+}
+
+func (e *MailDeliveryError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 type ConfigMailDeliveryTester struct {
 	configRepo ConfigRepository
@@ -129,13 +178,12 @@ func sendMailDeliveryMessage(settings MailDeliveryConfig, to string, subject str
 	recipient := strings.TrimSpace(to)
 
 	addr := fmt.Sprintf("%s:%d", settings.Host, settings.Port)
-	auth := smtp.PlainAuth("", settings.Username, settings.Password, settings.Host)
 	body, err := buildMailDeliveryMIMEBody(settings, recipient, subject, message)
 	if err != nil {
 		return err
 	}
 
-	return smtp.SendMail(addr, auth, settings.FromAddress, []string{recipient}, body)
+	return sendMailDeliveryWithTransport(settings, addr, recipient, body)
 }
 
 func ValidateMailDeliverySettings(settings MailDeliveryConfig) error {
@@ -145,7 +193,224 @@ func ValidateMailDeliverySettings(settings MailDeliveryConfig) error {
 	if strings.TrimSpace(settings.Host) == "" || settings.Port <= 0 || strings.TrimSpace(settings.FromAddress) == "" {
 		return fmt.Errorf("mail delivery is not fully configured")
 	}
+	switch settings.TransportMode {
+	case "", "plain", "starttls", "smtps":
+	default:
+		return fmt.Errorf("mail delivery transport mode is invalid")
+	}
 	return nil
+}
+
+func sendMailDeliveryWithTransport(settings MailDeliveryConfig, addr string, recipient string, body []byte) error {
+	switch normalizeMailTransportMode(settings.TransportMode) {
+	case "plain":
+		if err := smtpSendMailFunc(addr, smtpPlainAuth(settings), settings.FromAddress, []string{recipient}, body); err != nil {
+			return wrapMailDeliveryError("connect", err)
+		}
+		return nil
+	case "smtps":
+		return sendMailDeliveryViaClient(settings, addr, recipient, body, true)
+	default:
+		return sendMailDeliveryViaClient(settings, addr, recipient, body, false)
+	}
+}
+
+func smtpPlainAuth(settings MailDeliveryConfig) smtp.Auth {
+	if strings.TrimSpace(settings.Username) == "" {
+		return nil
+	}
+	return smtp.PlainAuth("", settings.Username, settings.Password, settings.Host)
+}
+
+func sendMailDeliveryViaClient(settings MailDeliveryConfig, addr string, recipient string, body []byte, implicitTLS bool) error {
+	transportMode := normalizeMailTransportMode(settings.TransportMode)
+	tlsConfig := &tls.Config{
+		ServerName:         settings.Host,
+		InsecureSkipVerify: settings.InsecureSkipVerify,
+	}
+
+	var (
+		conn net.Conn
+		err  error
+	)
+	if implicitTLS {
+		conn, err = smtpDialTLSFunc("tcp", addr, tlsConfig)
+	} else {
+		conn, err = smtpDialTimeoutFunc("tcp", addr, mailDeliveryOperationTimeout)
+	}
+	if err != nil {
+		stage := "connect"
+		if implicitTLS {
+			stage = "tls"
+		}
+		return wrapMailDeliveryError(stage, err)
+	}
+	defer conn.Close()
+
+	_ = conn.SetDeadline(time.Now().Add(mailDeliveryOperationTimeout))
+	client, err := smtp.NewClient(conn, settings.Host)
+	if err != nil {
+		return wrapMailDeliveryError("connect", err)
+	}
+	defer client.Close()
+
+	if !implicitTLS {
+		if ok, _ := client.Extension("STARTTLS"); ok {
+			_ = conn.SetDeadline(time.Now().Add(mailDeliveryOperationTimeout))
+			if err := client.StartTLS(tlsConfig); err != nil {
+				return wrapMailDeliveryError("tls", err)
+			}
+		} else if transportMode == "starttls" {
+			return wrapMailDeliveryError("tls", fmt.Errorf("server does not advertise STARTTLS"))
+		}
+	}
+
+	if auth := smtpPlainAuth(settings); auth != nil {
+		if ok, _ := client.Extension("AUTH"); ok {
+			_ = conn.SetDeadline(time.Now().Add(mailDeliveryOperationTimeout))
+			if err := client.Auth(auth); err != nil {
+				return wrapMailDeliveryError("auth", err)
+			}
+		} else {
+			return wrapMailDeliveryError("auth", fmt.Errorf("server does not advertise AUTH"))
+		}
+	}
+	_ = conn.SetDeadline(time.Now().Add(mailDeliveryOperationTimeout))
+	if err := client.Mail(settings.FromAddress); err != nil {
+		return wrapMailDeliveryError("mail_from", err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(mailDeliveryOperationTimeout))
+	if err := client.Rcpt(recipient); err != nil {
+		return wrapMailDeliveryError("rcpt_to", err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(mailDeliveryOperationTimeout))
+	writer, err := client.Data()
+	if err != nil {
+		return wrapMailDeliveryError("data", err)
+	}
+	if _, err := writer.Write(body); err != nil {
+		_ = writer.Close()
+		return wrapMailDeliveryError("data", err)
+	}
+	if err := writer.Close(); err != nil {
+		return wrapMailDeliveryError("data", err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(mailDeliveryOperationTimeout))
+	if err := client.Quit(); err != nil {
+		return wrapMailDeliveryError("quit", err)
+	}
+	return nil
+}
+
+func wrapMailDeliveryError(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var mailErr *MailDeliveryError
+	if errors.As(err, &mailErr) {
+		return err
+	}
+	return &MailDeliveryError{Stage: stage, Err: err}
+}
+
+func humanizeMailDeliveryError(err error) string {
+	if err == nil {
+		return "unknown error"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "operation timed out"
+	}
+	message := strings.TrimSpace(err.Error())
+	if message == "" {
+		return "unknown error"
+	}
+	return message
+}
+
+func DiagnoseMailDeliveryError(err error) MailDeliveryDiagnostic {
+	diagnostic := MailDeliveryDiagnostic{}
+	if err == nil {
+		return diagnostic
+	}
+
+	var mailErr *MailDeliveryError
+	if errors.As(err, &mailErr) {
+		diagnostic.Stage = mailErr.Stage
+		message := strings.ToLower(humanizeMailDeliveryError(mailErr.Err))
+		switch mailErr.Stage {
+		case "connect":
+			diagnostic.Code = "connect_failed"
+			diagnostic.Hint = "Check the SMTP host, port, firewall, and upstream network reachability."
+			diagnostic.Retryable = true
+		case "tls":
+			diagnostic.Code = "tls_failed"
+			diagnostic.Hint = "Check the selected transport mode and verify the server certificate or STARTTLS support."
+			if strings.Contains(message, "starttls") {
+				diagnostic.Code = "starttls_unavailable"
+				diagnostic.Hint = "The server does not advertise STARTTLS. Switch to Plain SMTP / SMTPS, or enable STARTTLS on the server."
+				diagnostic.Retryable = false
+			} else if strings.Contains(message, "certificate") || strings.Contains(message, "x509") {
+				diagnostic.Code = "tls_certificate_invalid"
+				diagnostic.Hint = "The server certificate is not trusted. Fix the certificate chain or enable insecure TLS verification only for controlled environments."
+				diagnostic.Retryable = false
+			} else {
+				diagnostic.Retryable = true
+			}
+		case "auth":
+			diagnostic.Code = "auth_failed"
+			diagnostic.Hint = "Check the SMTP username, password, and authentication method."
+			if strings.Contains(message, "advertise auth") {
+				diagnostic.Code = "auth_unavailable"
+				diagnostic.Hint = "The server does not advertise AUTH. Remove credentials for anonymous relay, or enable AUTH on the SMTP server."
+				diagnostic.Retryable = false
+			} else {
+				diagnostic.Retryable = false
+			}
+		case "mail_from":
+			diagnostic.Code = "sender_rejected"
+			diagnostic.Hint = "The SMTP server rejected the sender identity. Verify the configured From address is allowed by the provider."
+			diagnostic.Retryable = false
+		case "rcpt_to":
+			diagnostic.Code = "recipient_rejected"
+			diagnostic.Hint = "The SMTP server rejected the recipient address. Verify the target mailbox and provider restrictions."
+			diagnostic.Retryable = false
+		case "data":
+			diagnostic.Code = "data_failed"
+			diagnostic.Hint = "The SMTP server rejected the DATA phase. Check message size limits, upstream content filtering, or try again."
+			diagnostic.Retryable = true
+		case "quit":
+			diagnostic.Code = "quit_failed"
+			diagnostic.Hint = "The server disconnected during QUIT. The message body may already have been accepted; check the inbox before retrying."
+			diagnostic.Retryable = false
+		default:
+			diagnostic.Code = "delivery_failed"
+			diagnostic.Hint = "Review the SMTP configuration and upstream server logs."
+		}
+
+		var netErr net.Error
+		if errors.As(mailErr.Err, &netErr) && netErr.Timeout() {
+			diagnostic.Code = "timeout"
+			diagnostic.Hint = "The SMTP server timed out. Check network latency, firewall rules, and provider responsiveness."
+			diagnostic.Retryable = true
+		}
+		return diagnostic
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return MailDeliveryDiagnostic{
+			Code:      "timeout",
+			Hint:      "The SMTP server timed out. Check network latency, firewall rules, and provider responsiveness.",
+			Retryable: true,
+		}
+	}
+
+	return MailDeliveryDiagnostic{
+		Code:      "delivery_failed",
+		Hint:      "Review the SMTP configuration and upstream server logs.",
+		Retryable: false,
+	}
 }
 
 func buildMailDeliveryMIMEBody(settings MailDeliveryConfig, recipient string, subject string, message MailDeliveryMessage) ([]byte, error) {
@@ -434,15 +699,37 @@ func LoadMailSMTPSettings(ctx context.Context, repo ConfigRepository) (MailSMTPC
 	return settings, nil
 }
 
+func LoadMailInboundPolicySettings(ctx context.Context, repo ConfigRepository) (MailInboundPolicyConfig, error) {
+	if repo == nil {
+		item := NormalizeConfigEntryForTest(ConfigEntry{Key: ConfigKeyMailInboundPolicy, Value: map[string]any{}})
+		return mailInboundPolicyConfigFromEntry(item), nil
+	}
+
+	items, err := repo.List(ctx)
+	if err != nil {
+		return MailInboundPolicyConfig{}, err
+	}
+	for _, item := range items {
+		if item.Key == ConfigKeyMailInboundPolicy {
+			return mailInboundPolicyConfigFromEntry(NormalizeConfigEntryForTest(item)), nil
+		}
+	}
+
+	item := NormalizeConfigEntryForTest(ConfigEntry{Key: ConfigKeyMailInboundPolicy, Value: map[string]any{}})
+	return mailInboundPolicyConfigFromEntry(item), nil
+}
+
 func mailDeliveryConfigFromEntry(item ConfigEntry) MailDeliveryConfig {
 	return MailDeliveryConfig{
-		Enabled:     item.Value["enabled"].(bool),
-		Host:        item.Value["host"].(string),
-		Port:        item.Value["port"].(int),
-		Username:    item.Value["username"].(string),
-		Password:    item.Value["password"].(string),
-		FromAddress: item.Value["fromAddress"].(string),
-		FromName:    item.Value["fromName"].(string),
+		Enabled:            item.Value["enabled"].(bool),
+		Host:               item.Value["host"].(string),
+		Port:               item.Value["port"].(int),
+		Username:           item.Value["username"].(string),
+		Password:           item.Value["password"].(string),
+		FromAddress:        item.Value["fromAddress"].(string),
+		FromName:           item.Value["fromName"].(string),
+		TransportMode:      normalizeMailTransportMode(item.Value["transportMode"]),
+		InsecureSkipVerify: item.Value["insecureSkipVerify"].(bool),
 	}
 }
 
@@ -453,5 +740,32 @@ func mailSMTPConfigFromEntry(item ConfigEntry) MailSMTPConfig {
 		Hostname:        item.Value["hostname"].(string),
 		DKIMCnameTarget: item.Value["dkimCnameTarget"].(string),
 		MaxMessageBytes: item.Value["maxMessageBytes"].(int),
+	}
+}
+
+func mailInboundPolicyConfigFromEntry(item ConfigEntry) MailInboundPolicyConfig {
+	domainOverrides := map[string]MailInboundPolicyDomainConfig{}
+	if rawOverrides, ok := item.Value["domainOverrides"].(map[string]any); ok {
+		for domainName, overrideValue := range rawOverrides {
+			overrideMap, ok := overrideValue.(map[string]any)
+			if !ok {
+				continue
+			}
+			domainOverrides[strings.ToLower(strings.TrimSpace(domainName))] = MailInboundPolicyDomainConfig{
+				Enabled:               normalizeBool(overrideMap["enabled"], false),
+				MaxAttachmentSizeMB:   normalizeInt(overrideMap["maxAttachmentSizeMB"], 15),
+				RejectExecutableFiles: normalizeBool(overrideMap["rejectExecutableFiles"], true),
+			}
+		}
+	}
+
+	return MailInboundPolicyConfig{
+		AllowCatchAll:             item.Value["allowCatchAll"].(bool),
+		RequireExistingMailbox:    item.Value["requireExistingMailbox"].(bool),
+		RetainRawDays:             item.Value["retainRawDays"].(int),
+		MaxAttachmentSizeMB:       item.Value["maxAttachmentSizeMB"].(int),
+		RejectExecutableFiles:     item.Value["rejectExecutableFiles"].(bool),
+		EnableSpamScanningPreview: item.Value["enableSpamScanningPreview"].(bool),
+		DomainOverrides:           domainOverrides,
 	}
 }

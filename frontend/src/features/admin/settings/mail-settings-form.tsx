@@ -1,4 +1,5 @@
 import { Checkbox } from "@/components/ui/checkbox";
+import { BasicSelect } from "@/components/ui/basic-select";
 import { Input } from "@/components/ui/input";
 import { WorkspaceField } from "@/components/layout/workspace-ui";
 import type { MailDeliverySettings, MailInboundSettings, MailSMTPSettings } from "./types";
@@ -107,6 +108,17 @@ export function MailSettingsForm({
             <WorkspaceField label="发信端口">
               <Input aria-label="发信端口" type="number" value={String(delivery.port)} onChange={(event) => onDeliveryChange({ ...delivery, port: Number(event.target.value || 0) })} />
             </WorkspaceField>
+            <WorkspaceField label="传输模式">
+              <BasicSelect
+                aria-label="传输模式"
+                value={delivery.transportMode}
+                onChange={(event) => onDeliveryChange({ ...delivery, transportMode: event.target.value })}
+              >
+                <option value="plain">Plain SMTP</option>
+                <option value="starttls">STARTTLS</option>
+                <option value="smtps">SMTPS</option>
+              </BasicSelect>
+            </WorkspaceField>
             <WorkspaceField label="发信账号">
               <Input aria-label="发信账号" value={delivery.username} onChange={(event) => onDeliveryChange({ ...delivery, username: event.target.value })} />
             </WorkspaceField>
@@ -126,6 +138,13 @@ export function MailSettingsForm({
                 label="启用账户邮件发信"
                 checked={delivery.enabled}
                 onCheckedChange={(enabled) => onDeliveryChange({ ...delivery, enabled })}
+              />
+            </div>
+            <div className="flex items-end">
+              <CheckboxField
+                label="跳过 TLS 证书校验"
+                checked={delivery.insecureSkipVerify}
+                onCheckedChange={(insecureSkipVerify) => onDeliveryChange({ ...delivery, insecureSkipVerify })}
               />
             </div>
           </div>

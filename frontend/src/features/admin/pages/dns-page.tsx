@@ -1536,7 +1536,7 @@ export function AdminDnsPage() {
             </Button>
           </div>
         }
-        description="将 Zone、Records、验证与 Change Set 独立成单独工作台，避免继续嵌套在域名资产页里。"
+        description="将 Zone、Records、验证与 Change Set 拆分为独立工作区。"
         title="DNS 配置"
       >
         <div className="space-y-4">
@@ -2193,9 +2193,7 @@ export function AdminDnsPage() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-1">
                   <div className="text-sm font-medium">DNS 工作台</div>
-                  <p className="text-sm text-muted-foreground">
-                    用 Tabs 分开 Provider、Zone 和 Zone 工作区，减少一层套一层的展开面板。
-                  </p>
+                  <p className="text-sm text-muted-foreground">使用 Tabs 划分 Provider、Zone 与 Zone 工作区。</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <WorkspaceBadge variant="outline">

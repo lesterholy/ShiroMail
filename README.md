@@ -89,6 +89,8 @@ Important SMTP detail:
 - The runtime SMTP listener configuration is read from MySQL-backed system settings, not from static container environment variables.
 - The compose file exposes host port `25` to container port `2525` by default.
 - In the admin panel, configure `mail.smtp` settings such as enable/disable, listen address, hostname, and max message size.
+- SMTP delivery test failures now return structured diagnostics (`stage`, `code`, `hint`, `retryable`) and are also written into admin audit logs for later troubleshooting.
+- Current diagnostic codes include `connect_failed`, `starttls_unavailable`, `tls_certificate_invalid`, `auth_unavailable`, `sender_rejected`, `recipient_rejected`, `data_failed`, `quit_failed`, and `timeout`.
 
 Typical public inbound DNS shape:
 

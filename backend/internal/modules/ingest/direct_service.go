@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -20,10 +21,12 @@ type InboundStore interface {
 type DeliveryCallback func(mailboxUserID uint64, mailboxID uint64, mailboxAddress string, subject string)
 
 type DirectService struct {
-	mailboxes  mailbox.Repository
-	store      InboundStore
-	storage    FileStorage
-	onDelivery DeliveryCallback
+	mailboxes             mailbox.Repository
+	store                 InboundStore
+	storage               FileStorage
+	onDelivery            DeliveryCallback
+	inboundPolicyProvider InboundPolicyProvider
+	spool                 SpoolRepository
 }
 
 func NewDirectService(mailboxes mailbox.Repository, store InboundStore, storage FileStorage) *DirectService {
@@ -36,6 +39,10 @@ func NewDirectService(mailboxes mailbox.Repository, store InboundStore, storage 
 
 func (s *DirectService) SetDeliveryCallback(cb DeliveryCallback) {
 	s.onDelivery = cb
+}
+
+func (s *DirectService) SetInboundPolicyProvider(provider InboundPolicyProvider) {
+	s.inboundPolicyProvider = provider
 }
 
 func (s *DirectService) ResolveRecipient(ctx context.Context, address string) (mailbox.Mailbox, error) {
@@ -94,11 +101,53 @@ func (s *DirectService) deliverToTargets(ctx context.Context, env InboundEnvelop
 		return StoredInboundMessage{}, mailbox.ErrMailboxNotFound
 	}
 
-	parsed, err := ParseInboundMessage(env, source)
+	rawBytes, err := io.ReadAll(source)
 	if err != nil {
 		return StoredInboundMessage{}, err
 	}
 
+	parsed, err := ParseInboundMessage(env, bytes.NewReader(rawBytes))
+	if err != nil {
+		return StoredInboundMessage{}, err
+	}
+	policy, err := s.resolveInboundPolicy(ctx, targets)
+	if err != nil {
+		return StoredInboundMessage{}, err
+	}
+	if err := validateInboundMessageAttachments(parsed, policy); err != nil {
+		return StoredInboundMessage{}, err
+	}
+	if s.spool != nil {
+		queued, err := s.spool.Enqueue(ctx, SpoolItem{
+			MailFrom:         env.MailFrom,
+			Recipients:       append([]string{}, env.Recipients...),
+			TargetMailboxIDs: mailboxIDsFromTargets(targets),
+			RawMessage:       rawBytes,
+		})
+		if err != nil {
+			return StoredInboundMessage{}, err
+		}
+		return StoredInboundMessage{
+			SourceKind:      "smtp-spool",
+			SourceMessageID: fmt.Sprintf("spool-%d", queued.ID),
+			MailboxAddress:  targets[0].Address,
+			FromAddr:        env.MailFrom,
+			ToAddr:          strings.Join(env.Recipients, ","),
+		}, nil
+	}
+
+	return s.storeParsedToTargets(ctx, env, parsed, targets)
+}
+
+func (s *DirectService) processRawToTargets(ctx context.Context, env InboundEnvelope, raw []byte, targets []mailbox.Mailbox) (StoredInboundMessage, error) {
+	parsed, err := ParseInboundMessage(env, bytes.NewReader(raw))
+	if err != nil {
+		return StoredInboundMessage{}, err
+	}
+	return s.storeParsedToTargets(ctx, env, parsed, targets)
+}
+
+func (s *DirectService) storeParsedToTargets(ctx context.Context, env InboundEnvelope, parsed InboundMessage, targets []mailbox.Mailbox) (StoredInboundMessage, error) {
 	sourceMessageID := buildSourceMessageID(parsed.RawBytes)
 	baseReceivedAt := parsed.ReceivedAt
 	if baseReceivedAt.IsZero() {
@@ -153,6 +202,47 @@ func (s *DirectService) deliverToTargets(ctx context.Context, env InboundEnvelop
 
 	lastItem.MailboxAddress = deliveredTo.Address
 	return lastItem, nil
+}
+
+func (s *DirectService) resolveInboundPolicy(ctx context.Context, targets []mailbox.Mailbox) (InboundPolicy, error) {
+	if s.inboundPolicyProvider == nil {
+		return InboundPolicy{}, nil
+	}
+	return s.inboundPolicyProvider(ctx, append([]mailbox.Mailbox{}, targets...))
+}
+
+func validateInboundMessageAttachments(parsed InboundMessage, policy InboundPolicy) error {
+	for _, attachment := range parsed.Attachments {
+		if policy.MaxAttachmentSizeBytes > 0 && attachment.SizeBytes > policy.MaxAttachmentSizeBytes {
+			name := strings.TrimSpace(attachment.FileName)
+			if name == "" {
+				name = "attachment"
+			}
+			return &RejectionError{
+				Code:    RejectAttachmentTooLarge,
+				Message: fmt.Sprintf("attachment %s exceeds inbound policy size limit", name),
+			}
+		}
+		if policy.RejectExecutableFiles && isExecutableAttachment(attachment) {
+			name := strings.TrimSpace(attachment.FileName)
+			if name == "" {
+				name = "attachment"
+			}
+			return &RejectionError{
+				Code:    RejectExecutableAttachment,
+				Message: fmt.Sprintf("attachment %s is blocked by inbound policy", name),
+			}
+		}
+	}
+	return nil
+}
+
+func mailboxIDsFromTargets(targets []mailbox.Mailbox) []uint64 {
+	ids := make([]uint64, 0, len(targets))
+	for _, target := range targets {
+		ids = append(ids, target.ID)
+	}
+	return ids
 }
 
 func buildSourceMessageID(raw []byte) string {

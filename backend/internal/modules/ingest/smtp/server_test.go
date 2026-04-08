@@ -5,8 +5,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"net"
 	"log/slog"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -298,6 +298,86 @@ func TestServerAcceptsMultipleRecipientsInSingleMessage(t *testing.T) {
 	if len(secondItems) != 1 || secondItems[0].Subject != "Broadcast" {
 		t.Fatalf("expected second mailbox broadcast, got %#v", secondItems)
 	}
+}
+
+func TestServerRejectsAttachmentLargerThanInboundPolicyWith552(t *testing.T) {
+	fixture := newSMTPDirectServiceFixture(t)
+	fixture.service.SetInboundPolicyProvider(func(context.Context, []mailbox.Mailbox) (ingest.InboundPolicy, error) {
+		return ingest.InboundPolicy{MaxAttachmentSizeBytes: 8}, nil
+	})
+
+	server := NewServer(Config{
+		ListenAddr:      "127.0.0.1:0",
+		Hostname:        "shiro.local",
+		MaxMessageBytes: 1024 * 1024,
+	}, fixture.service)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ready := make(chan struct{})
+	go server.Start(ctx, func() { close(ready) })
+	<-ready
+	defer server.Drain()
+
+	conn, err := net.Dial("tcp", server.Addr())
+	if err != nil {
+		t.Fatalf("dial smtp: %v", err)
+	}
+	defer conn.Close()
+
+	client := newSMTPClient(t, conn)
+	client.expectPrefix("220")
+	client.sendCommand("EHLO localhost")
+	client.expectMultiline("250")
+	client.sendCommand("MAIL FROM:<sender@example.com>")
+	client.expectPrefix("250")
+	client.sendCommand("RCPT TO:<" + fixture.mailboxAddress + ">")
+	client.expectPrefix("250")
+	client.sendCommand("DATA")
+	client.expectPrefix("354")
+	client.sendData("From: sender@example.com\r\nTo: " + fixture.mailboxAddress + "\r\nSubject: Too big\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=abc\r\n\r\n--abc\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nhello direct smtp\r\n--abc\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"note.txt\"\r\n\r\nattachment body\r\n--abc--\r\n")
+	client.expectPrefix("552")
+}
+
+func TestServerRejectsExecutableAttachmentWith550(t *testing.T) {
+	fixture := newSMTPDirectServiceFixture(t)
+	fixture.service.SetInboundPolicyProvider(func(context.Context, []mailbox.Mailbox) (ingest.InboundPolicy, error) {
+		return ingest.InboundPolicy{RejectExecutableFiles: true}, nil
+	})
+
+	server := NewServer(Config{
+		ListenAddr:      "127.0.0.1:0",
+		Hostname:        "shiro.local",
+		MaxMessageBytes: 1024 * 1024,
+	}, fixture.service)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ready := make(chan struct{})
+	go server.Start(ctx, func() { close(ready) })
+	<-ready
+	defer server.Drain()
+
+	conn, err := net.Dial("tcp", server.Addr())
+	if err != nil {
+		t.Fatalf("dial smtp: %v", err)
+	}
+	defer conn.Close()
+
+	client := newSMTPClient(t, conn)
+	client.expectPrefix("220")
+	client.sendCommand("EHLO localhost")
+	client.expectMultiline("250")
+	client.sendCommand("MAIL FROM:<sender@example.com>")
+	client.expectPrefix("250")
+	client.sendCommand("RCPT TO:<" + fixture.mailboxAddress + ">")
+	client.expectPrefix("250")
+	client.sendCommand("DATA")
+	client.expectPrefix("354")
+	client.sendData("From: sender@example.com\r\nTo: " + fixture.mailboxAddress + "\r\nSubject: Executable\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=abc\r\n\r\n--abc\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nhello direct smtp\r\n--abc\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"run.exe\"\r\n\r\nMZbinary\r\n--abc--\r\n")
+	client.expectPrefix("550")
 }
 
 type smtpFixture struct {

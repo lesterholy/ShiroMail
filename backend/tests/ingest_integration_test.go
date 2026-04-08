@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -200,6 +201,133 @@ func TestRunSyncMessagesJobSyncsActiveMailboxes(t *testing.T) {
 	}
 	if len(items) != 1 {
 		t.Fatalf("expected 1 active mailbox message, got %d", len(items))
+	}
+}
+
+func TestRunInboundSpoolJobProcessesQueuedInboundMessage(t *testing.T) {
+	ctx := context.Background()
+	mailboxRepo := mailbox.NewMemoryRepository()
+	target, err := mailboxRepo.Create(ctx, mailbox.Mailbox{
+		UserID:    1,
+		DomainID:  1,
+		Domain:    "example.test",
+		LocalPart: "queued",
+		Address:   "queued@example.test",
+		Status:    "active",
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("create queued mailbox: %v", err)
+	}
+
+	repo := ingest.NewMemoryMessageRepository()
+	storage, err := ingest.NewLocalFileStorage(t.TempDir())
+	if err != nil {
+		t.Fatalf("create local storage: %v", err)
+	}
+	spool := ingest.NewMemorySpoolRepository()
+	service := ingest.NewDirectService(mailboxRepo, repo, storage)
+	service.SetSpoolRepository(spool)
+
+	if _, err := service.Deliver(ctx, ingest.InboundEnvelope{
+		MailFrom:   "sender@example.com",
+		Recipients: []string{target.Address},
+	}, strings.NewReader("From: sender@example.com\r\nTo: queued@example.test\r\nSubject: Async queued\r\n\r\nqueued body")); err != nil {
+		t.Fatalf("queue inbound message: %v", err)
+	}
+
+	items, err := repo.ListByMailboxID(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("list queued messages before worker: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no stored message before worker, got %d", len(items))
+	}
+
+	if err := jobs.RunInboundSpoolJob(ctx, service); err != nil {
+		t.Fatalf("run inbound spool job: %v", err)
+	}
+
+	items, err = repo.ListByMailboxID(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("list queued messages after worker: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 stored message after worker, got %d", len(items))
+	}
+	if items[0].Subject != "Async queued" {
+		t.Fatalf("expected Async queued subject, got %s", items[0].Subject)
+	}
+
+	spoolItems, err := spool.List(ctx)
+	if err != nil {
+		t.Fatalf("list spool items: %v", err)
+	}
+	if len(spoolItems) != 1 {
+		t.Fatalf("expected 1 spool item, got %d", len(spoolItems))
+	}
+	if spoolItems[0].Status != ingest.SpoolStatusCompleted {
+		t.Fatalf("expected completed spool item, got %s", spoolItems[0].Status)
+	}
+}
+
+func TestRunInboundSpoolJobLeavesRetriableFailureQueued(t *testing.T) {
+	ctx := context.Background()
+	mailboxRepo := mailbox.NewMemoryRepository()
+	target, err := mailboxRepo.Create(ctx, mailbox.Mailbox{
+		UserID:    1,
+		DomainID:  1,
+		Domain:    "example.test",
+		LocalPart: "retry",
+		Address:   "retry@example.test",
+		Status:    "active",
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("create retry mailbox: %v", err)
+	}
+
+	repo := ingest.NewMemoryMessageRepository()
+	storage, err := ingest.NewLocalFileStorage(t.TempDir())
+	if err != nil {
+		t.Fatalf("create local storage: %v", err)
+	}
+	spool := ingest.NewMemorySpoolRepository()
+	service := ingest.NewDirectService(mailboxRepo, repo, storage)
+	service.SetSpoolRepository(spool)
+
+	if _, err := service.Deliver(ctx, ingest.InboundEnvelope{
+		MailFrom:   "sender@example.com",
+		Recipients: []string{target.Address},
+	}, strings.NewReader("From: sender@example.com\r\nTo: retry@example.test\r\nSubject: Retry\r\n\r\nqueued body")); err != nil {
+		t.Fatalf("queue inbound message: %v", err)
+	}
+
+	if err := mailboxRepo.DeleteByID(ctx, target.ID); err != nil {
+		t.Fatalf("delete mailbox before spool processing: %v", err)
+	}
+
+	err = jobs.RunInboundSpoolJob(ctx, service)
+	if err == nil {
+		t.Fatal("expected spool processing error after target removal")
+	}
+
+	items, err := spool.List(ctx)
+	if err != nil {
+		t.Fatalf("list spool items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 spool item, got %d", len(items))
+	}
+	if items[0].Status != ingest.SpoolStatusPending {
+		t.Fatalf("expected failed item to be requeued, got %s", items[0].Status)
+	}
+	if items[0].AttemptCount != 1 {
+		t.Fatalf("expected first attempt count 1, got %d", items[0].AttemptCount)
 	}
 }
 

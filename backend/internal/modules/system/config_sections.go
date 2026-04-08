@@ -69,22 +69,52 @@ type MailSMTPConfig struct {
 }
 
 type MailDeliveryConfig struct {
-	Enabled     bool   `json:"enabled"`
-	Host        string `json:"host"`
-	Port        int    `json:"port"`
-	Username    string `json:"username"`
-	Password    string `json:"password"`
-	FromAddress string `json:"fromAddress"`
-	FromName    string `json:"fromName"`
+	Enabled            bool   `json:"enabled"`
+	Host               string `json:"host"`
+	Port               int    `json:"port"`
+	Username           string `json:"username"`
+	Password           string `json:"password"`
+	FromAddress        string `json:"fromAddress"`
+	FromName           string `json:"fromName"`
+	TransportMode      string `json:"transportMode"`
+	InsecureSkipVerify bool   `json:"insecureSkipVerify"`
 }
 
 type MailInboundPolicyConfig struct {
-	AllowCatchAll             bool `json:"allowCatchAll"`
-	RequireExistingMailbox    bool `json:"requireExistingMailbox"`
-	RetainRawDays             int  `json:"retainRawDays"`
-	MaxAttachmentSizeMB       int  `json:"maxAttachmentSizeMB"`
-	RejectExecutableFiles     bool `json:"rejectExecutableFiles"`
-	EnableSpamScanningPreview bool `json:"enableSpamScanningPreview"`
+	AllowCatchAll             bool                                     `json:"allowCatchAll"`
+	RequireExistingMailbox    bool                                     `json:"requireExistingMailbox"`
+	RetainRawDays             int                                      `json:"retainRawDays"`
+	MaxAttachmentSizeMB       int                                      `json:"maxAttachmentSizeMB"`
+	RejectExecutableFiles     bool                                     `json:"rejectExecutableFiles"`
+	EnableSpamScanningPreview bool                                     `json:"enableSpamScanningPreview"`
+	DomainOverrides           map[string]MailInboundPolicyDomainConfig `json:"domainOverrides"`
+}
+
+type MailInboundPolicyDomainConfig struct {
+	Enabled               bool `json:"enabled"`
+	MaxAttachmentSizeMB   int  `json:"maxAttachmentSizeMB"`
+	RejectExecutableFiles bool `json:"rejectExecutableFiles"`
+}
+
+type APILimitsConfig struct {
+	Enabled                     bool   `json:"enabled"`
+	IdentityMode                string `json:"identityMode"`
+	AnonymousRPM                int    `json:"anonymousRPM"`
+	AuthenticatedRPM            int    `json:"authenticatedRPM"`
+	AuthRPM                     int    `json:"authRPM"`
+	LoginRPM                    int    `json:"loginRPM"`
+	RegisterRPM                 int    `json:"registerRPM"`
+	RefreshRPM                  int    `json:"refreshRPM"`
+	ForgotPasswordRPM           int    `json:"forgotPasswordRPM"`
+	ResetPasswordRPM            int    `json:"resetPasswordRPM"`
+	EmailVerificationResendRPM  int    `json:"emailVerificationResendRPM"`
+	EmailVerificationConfirmRPM int    `json:"emailVerificationConfirmRPM"`
+	OAuthStartRPM               int    `json:"oauthStartRPM"`
+	OAuthCallbackRPM            int    `json:"oauthCallbackRPM"`
+	Login2FAVerifyRPM           int    `json:"login2faVerifyRPM"`
+	MailboxWriteRPM             int    `json:"mailboxWriteRPM"`
+	StrictIPEnabled             bool   `json:"strictIpEnabled"`
+	StrictIPRPM                 int    `json:"strictIpRPM"`
 }
 
 type AuthRuntimeSettings struct {
@@ -140,6 +170,12 @@ var settingsSectionDefinitions = []SettingsSectionDefinition{
 		Title:       "收件与 SMTP",
 		Description: "SMTP 收件监听、账户邮件投递与收件策略。",
 		ConfigKeys:  []string{ConfigKeyMailSMTP, ConfigKeyMailDelivery, ConfigKeyMailInboundPolicy},
+	},
+	{
+		Key:         "api",
+		Title:       "API 设置",
+		Description: "API 速率限制、鉴权身份桶与严格 IP 限流策略。",
+		ConfigKeys:  []string{ConfigKeyAPILimits},
 	},
 	{
 		Key:         "domain",
@@ -200,13 +236,15 @@ func defaultConfigValueForKey(key string) map[string]any {
 		}
 	case ConfigKeyMailDelivery:
 		return map[string]any{
-			"enabled":     false,
-			"host":        "",
-			"port":        587,
-			"username":    "",
-			"password":    "",
-			"fromAddress": "",
-			"fromName":    "Shiro Email",
+			"enabled":            false,
+			"host":               "",
+			"port":               587,
+			"username":           "",
+			"password":           "",
+			"fromAddress":        "",
+			"fromName":           "Shiro Email",
+			"transportMode":      "starttls",
+			"insecureSkipVerify": false,
 		}
 	case ConfigKeyMailInboundPolicy:
 		return map[string]any{
@@ -216,6 +254,28 @@ func defaultConfigValueForKey(key string) map[string]any {
 			"maxAttachmentSizeMB":       15,
 			"rejectExecutableFiles":     true,
 			"enableSpamScanningPreview": false,
+			"domainOverrides":           map[string]any{},
+		}
+	case ConfigKeyAPILimits:
+		return map[string]any{
+			"enabled":                     true,
+			"identityMode":                "bearer_or_ip",
+			"anonymousRPM":                120,
+			"authenticatedRPM":            600,
+			"authRPM":                     10,
+			"loginRPM":                    10,
+			"registerRPM":                 10,
+			"refreshRPM":                  30,
+			"forgotPasswordRPM":           10,
+			"resetPasswordRPM":            10,
+			"emailVerificationResendRPM":  10,
+			"emailVerificationConfirmRPM": 30,
+			"oauthStartRPM":               20,
+			"oauthCallbackRPM":            20,
+			"login2faVerifyRPM":           20,
+			"mailboxWriteRPM":             1200,
+			"strictIpEnabled":             false,
+			"strictIpRPM":                 1800,
 		}
 	case ConfigKeyDomainPublicPoolPolicy:
 		return map[string]any{
@@ -326,6 +386,8 @@ func normalizeConfigValue(key string, value map[string]any) map[string]any {
 		base["password"] = normalizeString(base["password"], "")
 		base["fromAddress"] = normalizeString(base["fromAddress"], "")
 		base["fromName"] = normalizeString(base["fromName"], "Shiro Email")
+		base["transportMode"] = normalizeMailTransportMode(base["transportMode"])
+		base["insecureSkipVerify"] = normalizeBool(base["insecureSkipVerify"], false)
 	case key == ConfigKeyMailInboundPolicy:
 		base["allowCatchAll"] = normalizeBool(base["allowCatchAll"], false)
 		base["requireExistingMailbox"] = normalizeBool(base["requireExistingMailbox"], true)
@@ -333,6 +395,26 @@ func normalizeConfigValue(key string, value map[string]any) map[string]any {
 		base["maxAttachmentSizeMB"] = normalizeInt(base["maxAttachmentSizeMB"], 15)
 		base["rejectExecutableFiles"] = normalizeBool(base["rejectExecutableFiles"], true)
 		base["enableSpamScanningPreview"] = normalizeBool(base["enableSpamScanningPreview"], false)
+		base["domainOverrides"] = normalizeMailInboundPolicyDomainOverrides(base["domainOverrides"])
+	case key == ConfigKeyAPILimits:
+		base["enabled"] = normalizeBool(base["enabled"], true)
+		base["identityMode"] = normalizeRateLimitIdentityMode(base["identityMode"])
+		base["anonymousRPM"] = normalizeInt(base["anonymousRPM"], 120)
+		base["authenticatedRPM"] = normalizeInt(base["authenticatedRPM"], 600)
+		base["authRPM"] = normalizeInt(base["authRPM"], 10)
+		base["loginRPM"] = normalizeInt(base["loginRPM"], 10)
+		base["registerRPM"] = normalizeInt(base["registerRPM"], 10)
+		base["refreshRPM"] = normalizeInt(base["refreshRPM"], 30)
+		base["forgotPasswordRPM"] = normalizeInt(base["forgotPasswordRPM"], 10)
+		base["resetPasswordRPM"] = normalizeInt(base["resetPasswordRPM"], 10)
+		base["emailVerificationResendRPM"] = normalizeInt(base["emailVerificationResendRPM"], 10)
+		base["emailVerificationConfirmRPM"] = normalizeInt(base["emailVerificationConfirmRPM"], 30)
+		base["oauthStartRPM"] = normalizeInt(base["oauthStartRPM"], 20)
+		base["oauthCallbackRPM"] = normalizeInt(base["oauthCallbackRPM"], 20)
+		base["login2faVerifyRPM"] = normalizeInt(base["login2faVerifyRPM"], 20)
+		base["mailboxWriteRPM"] = normalizeInt(base["mailboxWriteRPM"], 1200)
+		base["strictIpEnabled"] = normalizeBool(base["strictIpEnabled"], false)
+		base["strictIpRPM"] = normalizeInt(base["strictIpRPM"], 1800)
 	case key == ConfigKeyDomainPublicPoolPolicy:
 		base["requiresReview"] = normalizeBool(base["requiresReview"], true)
 	case key == ConfigKeySiteIdentity:
@@ -352,6 +434,54 @@ func normalizeString(value any, fallback string) string {
 		return cast
 	}
 	return fallback
+}
+
+func normalizeMailInboundPolicyDomainOverrides(value any) map[string]any {
+	raw, ok := value.(map[string]any)
+	if !ok || raw == nil {
+		return map[string]any{}
+	}
+
+	normalized := make(map[string]any, len(raw))
+	for domainName, overrideValue := range raw {
+		trimmedDomain := strings.ToLower(strings.TrimSpace(domainName))
+		if trimmedDomain == "" {
+			continue
+		}
+
+		overrideMap, ok := overrideValue.(map[string]any)
+		if !ok || overrideMap == nil {
+			continue
+		}
+
+		normalized[trimmedDomain] = map[string]any{
+			"enabled":               normalizeBool(overrideMap["enabled"], false),
+			"maxAttachmentSizeMB":   normalizeInt(overrideMap["maxAttachmentSizeMB"], 15),
+			"rejectExecutableFiles": normalizeBool(overrideMap["rejectExecutableFiles"], true),
+		}
+	}
+
+	return normalized
+}
+
+func normalizeMailTransportMode(value any) string {
+	mode := strings.ToLower(strings.TrimSpace(normalizeString(value, "starttls")))
+	switch mode {
+	case "plain", "starttls", "smtps":
+		return mode
+	default:
+		return "starttls"
+	}
+}
+
+func normalizeRateLimitIdentityMode(value any) string {
+	mode := strings.ToLower(strings.TrimSpace(normalizeString(value, "bearer_or_ip")))
+	switch mode {
+	case "ip", "bearer_or_ip":
+		return mode
+	default:
+		return "bearer_or_ip"
+	}
 }
 
 func normalizeBool(value any, fallback bool) bool {
@@ -429,6 +559,7 @@ func defaultConfigEntries() []ConfigEntry {
 		ConfigKeyMailSMTP,
 		ConfigKeyMailDelivery,
 		ConfigKeyMailInboundPolicy,
+		ConfigKeyAPILimits,
 		ConfigKeyDomainPublicPoolPolicy,
 	}
 

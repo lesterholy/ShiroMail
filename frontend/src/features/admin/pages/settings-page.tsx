@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Activity,
   Globe,
   KeyRound,
   Settings2,
@@ -14,10 +15,19 @@ import { NoticeBanner } from "@/components/ui/notice-banner";
 import {
   WorkspacePage,
   WorkspacePanel,
+  WorkspaceBadge,
+  WorkspaceListRow,
 } from "@/components/layout/workspace-ui";
+import {
+  getAPIErrorMessage,
+  getMailDeliveryDiagnostic,
+  getMailDeliveryErrorMessage,
+  type MailDeliveryDiagnosticPayload,
+} from "@/lib/http";
 import { validateEmailAddress, validateHTTPUrl, validateIntegerRange, validateRequiredText, validateSelection } from "@/lib/validation";
 import {
   deleteAdminConfig,
+  fetchAdminAPILimitsSettings,
   fetchAdminSettingsSections,
   sendAdminMailDeliveryTest,
   upsertAdminConfig,
@@ -29,11 +39,13 @@ import {
   CONFIG_KEY_AUTH_PASSWORD,
   CONFIG_KEY_AUTH_REGISTRATION,
   CONFIG_KEY_AUTH_SESSION,
+  CONFIG_KEY_API_LIMITS,
   CONFIG_KEY_DOMAIN_POLICY,
   CONFIG_KEY_MAIL_DELIVERY,
   CONFIG_KEY_MAIL_INBOUND,
   CONFIG_KEY_MAIL_SMTP,
   CONFIG_KEY_SITE_IDENTITY,
+  defaultAPILimitsSettings,
   defaultAuthPasswordSettings,
   defaultAuthRegistrationSettings,
   defaultAuthSessionSettings,
@@ -52,6 +64,7 @@ import {
   readStringArray,
 } from "../settings/defaults";
 import { AuthSettingsForm } from "../settings/auth-settings-form";
+import { APISettingsForm } from "../settings/api-settings-form";
 import { DomainPolicyForm } from "../settings/domain-policy-form";
 import { MailSettingsForm } from "../settings/mail-settings-form";
 import { SiteSettingsForm } from "../settings/site-settings-form";
@@ -63,6 +76,7 @@ import type {
   AuthPasswordSettings,
   AuthRegistrationSettings,
   AuthSessionSettings,
+  APILimitsSettings,
   DomainPolicySettings,
   MailInboundSettings,
   MailDeliverySettings,
@@ -71,6 +85,15 @@ import type {
   OAuthProviderSettings,
   SiteIdentitySettings,
 } from "../settings/types";
+import { formatDateTime } from "../../user/pages/shared";
+
+type DeliveryTestDiagnosticState = {
+  status: "idle" | "success" | "error";
+  recipient: string;
+  testedAt?: string;
+  message?: string;
+  diagnostic?: MailDeliveryDiagnosticPayload;
+};
 
 function flattenSectionItems(sections: SettingsSection[]) {
   return sections.flatMap((section) => section.items);
@@ -309,6 +332,11 @@ function parseMailDelivery(sections: SettingsSection[]): MailDeliverySettings {
     password: readString(item.value.password, defaultMailDeliverySettings.password),
     fromAddress: readString(item.value.fromAddress, defaultMailDeliverySettings.fromAddress),
     fromName: readString(item.value.fromName, defaultMailDeliverySettings.fromName),
+    transportMode: readString(item.value.transportMode, defaultMailDeliverySettings.transportMode),
+    insecureSkipVerify: readBoolean(
+      item.value.insecureSkipVerify,
+      defaultMailDeliverySettings.insecureSkipVerify,
+    ),
   };
 }
 
@@ -360,6 +388,82 @@ function parseDomainPolicy(sections: SettingsSection[]): DomainPolicySettings {
   };
 }
 
+function parseAPILimits(sections: SettingsSection[]): APILimitsSettings {
+  const item = getConfigItem(
+    flattenSectionItems(sections),
+    CONFIG_KEY_API_LIMITS,
+    defaultAPILimitsSettings,
+  );
+  return {
+    enabled: readBoolean(item.value.enabled, defaultAPILimitsSettings.enabled),
+    identityMode: readString(
+      item.value.identityMode,
+      defaultAPILimitsSettings.identityMode,
+    ),
+    anonymousRPM: readNumber(
+      item.value.anonymousRPM,
+      defaultAPILimitsSettings.anonymousRPM,
+    ),
+    authenticatedRPM: readNumber(
+      item.value.authenticatedRPM,
+      defaultAPILimitsSettings.authenticatedRPM,
+    ),
+    authRPM: readNumber(item.value.authRPM, defaultAPILimitsSettings.authRPM),
+    loginRPM: readNumber(
+      item.value.loginRPM,
+      defaultAPILimitsSettings.loginRPM,
+    ),
+    registerRPM: readNumber(
+      item.value.registerRPM,
+      defaultAPILimitsSettings.registerRPM,
+    ),
+    refreshRPM: readNumber(
+      item.value.refreshRPM,
+      defaultAPILimitsSettings.refreshRPM,
+    ),
+    forgotPasswordRPM: readNumber(
+      item.value.forgotPasswordRPM,
+      defaultAPILimitsSettings.forgotPasswordRPM,
+    ),
+    resetPasswordRPM: readNumber(
+      item.value.resetPasswordRPM,
+      defaultAPILimitsSettings.resetPasswordRPM,
+    ),
+    emailVerificationResendRPM: readNumber(
+      item.value.emailVerificationResendRPM,
+      defaultAPILimitsSettings.emailVerificationResendRPM,
+    ),
+    emailVerificationConfirmRPM: readNumber(
+      item.value.emailVerificationConfirmRPM,
+      defaultAPILimitsSettings.emailVerificationConfirmRPM,
+    ),
+    oauthStartRPM: readNumber(
+      item.value.oauthStartRPM,
+      defaultAPILimitsSettings.oauthStartRPM,
+    ),
+    oauthCallbackRPM: readNumber(
+      item.value.oauthCallbackRPM,
+      defaultAPILimitsSettings.oauthCallbackRPM,
+    ),
+    login2faVerifyRPM: readNumber(
+      item.value.login2faVerifyRPM,
+      defaultAPILimitsSettings.login2faVerifyRPM,
+    ),
+    mailboxWriteRPM: readNumber(
+      item.value.mailboxWriteRPM,
+      defaultAPILimitsSettings.mailboxWriteRPM,
+    ),
+    strictIpEnabled: readBoolean(
+      item.value.strictIpEnabled,
+      defaultAPILimitsSettings.strictIpEnabled,
+    ),
+    strictIpRPM: readNumber(
+      item.value.strictIpRPM,
+      defaultAPILimitsSettings.strictIpRPM,
+    ),
+  };
+}
+
 function validateAdminSettingsSnapshot(input: {
   siteIdentity: SiteIdentitySettings;
   registration: AuthRegistrationSettings;
@@ -368,6 +472,7 @@ function validateAdminSettingsSnapshot(input: {
   smtp: MailSMTPSettings;
   delivery: MailDeliverySettings;
   inbound: MailInboundSettings;
+  apiLimits: APILimitsSettings;
   oauthProviders: OAuthProviderSettings[];
 }) {
   const siteError =
@@ -414,10 +519,37 @@ function validateAdminSettingsSnapshot(input: {
     return inboundError;
   }
 
+  const apiLimitsError =
+    validateSelection("API 身份桶策略", input.apiLimits.identityMode, ["ip", "bearer_or_ip"]) ||
+    validateIntegerRange("匿名请求 RPM", input.apiLimits.anonymousRPM, { min: 1, max: 60000 }) ||
+    validateIntegerRange("已认证请求 RPM", input.apiLimits.authenticatedRPM, { min: 1, max: 60000 }) ||
+    validateIntegerRange("认证接口总 RPM", input.apiLimits.authRPM, { min: 1, max: 60000 }) ||
+    validateIntegerRange("登录 RPM", input.apiLimits.loginRPM, { min: 1, max: 60000 }) ||
+    validateIntegerRange("注册 RPM", input.apiLimits.registerRPM, { min: 1, max: 60000 }) ||
+    validateIntegerRange("Refresh RPM", input.apiLimits.refreshRPM, { min: 1, max: 60000 }) ||
+    validateIntegerRange("忘记密码 RPM", input.apiLimits.forgotPasswordRPM, { min: 1, max: 60000 }) ||
+    validateIntegerRange("重置密码 RPM", input.apiLimits.resetPasswordRPM, { min: 1, max: 60000 }) ||
+    validateIntegerRange("重发邮箱验证 RPM", input.apiLimits.emailVerificationResendRPM, { min: 1, max: 60000 }) ||
+    validateIntegerRange("确认邮箱验证 RPM", input.apiLimits.emailVerificationConfirmRPM, { min: 1, max: 60000 }) ||
+    validateIntegerRange("OAuth Start RPM", input.apiLimits.oauthStartRPM, { min: 1, max: 60000 }) ||
+    validateIntegerRange("OAuth Callback RPM", input.apiLimits.oauthCallbackRPM, { min: 1, max: 60000 }) ||
+    validateIntegerRange("2FA Verify RPM", input.apiLimits.login2faVerifyRPM, { min: 1, max: 60000 }) ||
+    validateIntegerRange("邮箱写操作 RPM", input.apiLimits.mailboxWriteRPM, { min: 1, max: 60000 }) ||
+    (input.apiLimits.strictIpEnabled
+      ? validateIntegerRange("严格 IP RPM", input.apiLimits.strictIpRPM, {
+          min: 1,
+          max: 60000,
+        })
+      : null);
+  if (apiLimitsError) {
+    return apiLimitsError;
+  }
+
   if (input.delivery.enabled) {
     const deliveryError =
       validateRequiredText("发信 SMTP Host", input.delivery.host, { minLength: 2, maxLength: 253 }) ||
       validateIntegerRange("发信端口", input.delivery.port, { min: 1, max: 65535 }) ||
+      validateSelection("发信传输模式", input.delivery.transportMode, ["plain", "starttls", "smtps"]) ||
       validateRequiredText("发信账号", input.delivery.username, { minLength: 1, maxLength: 255 }) ||
       validateRequiredText("SMTP 密码 / App Password", input.delivery.password, { minLength: 1, maxLength: 255 }) ||
       validateEmailAddress(input.delivery.fromAddress) ||
@@ -460,6 +592,10 @@ export function AdminSettingsPage() {
     queryKey: ["admin-settings-sections"],
     queryFn: fetchAdminSettingsSections,
   });
+  const apiLimitsRuntimeQuery = useQuery({
+    queryKey: ["admin-api-limits-settings"],
+    queryFn: fetchAdminAPILimitsSettings,
+  });
 
   const [siteIdentity, setSiteIdentity] = useState<SiteIdentitySettings>(
     defaultSiteIdentitySettings,
@@ -485,6 +621,9 @@ export function AdminSettingsPage() {
   const [inbound, setInbound] = useState<MailInboundSettings>(
     defaultMailInboundSettings,
   );
+  const [apiLimits, setAPILimits] = useState<APILimitsSettings>(
+    defaultAPILimitsSettings,
+  );
   const [domainPolicy, setDomainPolicy] = useState<DomainPolicySettings>(
     defaultDomainPolicySettings,
   );
@@ -495,6 +634,10 @@ export function AdminSettingsPage() {
   const previousDerivedMailTargetsRef = useRef(derivedMailTargets);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [feedbackVariant, setFeedbackVariant] = useState<"error" | "success">("success");
+  const [deliveryTestDiagnostic, setDeliveryTestDiagnostic] = useState<DeliveryTestDiagnosticState>({
+    status: "idle",
+    recipient: "",
+  });
   const deliveryTestLockRef = useRef(false);
 
   useEffect(() => {
@@ -513,6 +656,7 @@ export function AdminSettingsPage() {
     setDelivery(nextDelivery);
     setDeliveryTestRecipient(nextDelivery.fromAddress);
     setInbound(parseInbound(settingsQuery.data));
+    setAPILimits(parseAPILimits(settingsQuery.data));
     setDomainPolicy(parseDomainPolicy(settingsQuery.data));
   }, [settingsQuery.data]);
 
@@ -567,6 +711,7 @@ export function AdminSettingsPage() {
         upsertAdminConfig(CONFIG_KEY_MAIL_SMTP, smtp),
         upsertAdminConfig(CONFIG_KEY_MAIL_DELIVERY, delivery),
         upsertAdminConfig(CONFIG_KEY_MAIL_INBOUND, inbound),
+        upsertAdminConfig(CONFIG_KEY_API_LIMITS, apiLimits),
         upsertAdminConfig(CONFIG_KEY_DOMAIN_POLICY, domainPolicy),
         ...oauthProviders.map((provider) =>
           upsertAdminConfig(getOAuthProviderConfigKey(provider.slug), provider),
@@ -580,11 +725,14 @@ export function AdminSettingsPage() {
       await queryClient.invalidateQueries({
         queryKey: ["admin-settings-sections"],
       });
+      await queryClient.invalidateQueries({
+        queryKey: ["admin-api-limits-settings"],
+      });
       window.setTimeout(() => setFeedback(null), 5000);
     },
-    onError: () => {
+    onError: (error) => {
       setFeedbackVariant("error");
-      setFeedback("系统设置保存失败，请稍后重试。");
+      setFeedback(getAPIErrorMessage(error, "系统设置保存失败，请稍后重试。"));
       window.setTimeout(() => setFeedback(null), 5000);
     },
   });
@@ -595,13 +743,37 @@ export function AdminSettingsPage() {
         to: deliveryTestRecipient.trim() || delivery.fromAddress,
       }),
     onSuccess: (result) => {
+      const testedAt = new Date().toISOString();
+      setDeliveryTestDiagnostic({
+        status: "success",
+        recipient: result.recipient,
+        testedAt,
+        message: `测试邮件已提交到 ${result.recipient}。`,
+      });
       setFeedbackVariant("success");
       setFeedback(`测试邮件已发送至 ${result.recipient}。`);
       window.setTimeout(() => setFeedback(null), 5000);
     },
-    onError: () => {
+    onError: (error) => {
+      const recipient = deliveryTestRecipient.trim() || delivery.fromAddress;
+      const diagnostic = getMailDeliveryDiagnostic(error);
+      setDeliveryTestDiagnostic({
+        status: "error",
+        recipient,
+        testedAt: new Date().toISOString(),
+        diagnostic: diagnostic ?? undefined,
+        message: getMailDeliveryErrorMessage(
+          error,
+          "测试邮件发送失败，请检查 SMTP 配置后重试。",
+        ),
+      });
       setFeedbackVariant("error");
-      setFeedback("测试邮件发送失败，请检查 SMTP 配置后重试。");
+      setFeedback(
+        getMailDeliveryErrorMessage(
+          error,
+          "测试邮件发送失败，请检查 SMTP 配置后重试。",
+        ),
+      );
       window.setTimeout(() => setFeedback(null), 5000);
     },
   });
@@ -625,6 +797,7 @@ export function AdminSettingsPage() {
       smtp,
       delivery,
       inbound,
+      apiLimits,
       oauthProviders,
     });
     if (validationError) {
@@ -700,6 +873,10 @@ export function AdminSettingsPage() {
               <Users className="size-4" />
               用户设置
             </TabsTrigger>
+            <TabsTrigger className="h-10 flex-none px-3.5" value="api">
+              <Activity className="size-4" />
+              API 设置
+            </TabsTrigger>
             <TabsTrigger className="h-10 flex-none px-3.5" value="other">
               <Settings2 className="size-4" />
               其他设置
@@ -761,6 +938,65 @@ export function AdminSettingsPage() {
           </WorkspacePanel>
         </TabsContent>
 
+        <TabsContent value="api">
+          <WorkspacePanel
+            title="API 设置"
+            description="细分匿名、已认证、登录注册与邮箱写操作限流，并支持严格 IP 桶。"
+          >
+            <div className="mb-4 grid gap-3 lg:grid-cols-4">
+              <div className="rounded-2xl border border-border/60 bg-muted/20 p-4">
+                <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                  Runtime Status
+                </div>
+                <div className="mt-2 text-base font-semibold text-foreground">
+                  {apiLimitsRuntimeQuery.data?.enabled ? "Rate limit enabled" : "Rate limit disabled"}
+                </div>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  当前后端读取到的主限流状态。保存后这里会随着轮询刷新自动更新。
+                </p>
+              </div>
+              <div className="rounded-2xl border border-border/60 bg-muted/20 p-4">
+                <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                  Identity Mode
+                </div>
+                <div className="mt-2 text-base font-semibold text-foreground">
+                  {apiLimitsRuntimeQuery.data?.identityMode === "ip" ? "IP only" : "Bearer / IP mixed"}
+                </div>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  匿名流量走 IP 桶；已认证流量根据当前策略决定是否按 Bearer Token 分桶。
+                </p>
+              </div>
+              <div className="rounded-2xl border border-border/60 bg-muted/20 p-4">
+                <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                  Main RPM
+                </div>
+                <div className="mt-2 text-base font-semibold text-foreground">
+                  {apiLimitsRuntimeQuery.data
+                    ? `${apiLimitsRuntimeQuery.data.anonymousRPM} / ${apiLimitsRuntimeQuery.data.authenticatedRPM}`
+                    : "-- / --"}
+                </div>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  左侧是匿名请求每分钟上限，右侧是已认证请求每分钟上限。
+                </p>
+              </div>
+              <div className="rounded-2xl border border-border/60 bg-muted/20 p-4">
+                <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                  Strict IP
+                </div>
+                <div className="mt-2 text-base font-semibold text-foreground">
+                  {apiLimitsRuntimeQuery.data?.strictIpEnabled
+                    ? `${apiLimitsRuntimeQuery.data.strictIpRPM} RPM`
+                    : "Disabled"}
+                </div>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  作为第二层兜底桶，适合限制共享代理、出口合并或单源高频打点。
+                </p>
+              </div>
+            </div>
+            <APISettingsForm value={apiLimits} onChange={setAPILimits} />
+          </WorkspacePanel>
+        </TabsContent>
+
         <TabsContent value="other">
           <div className="grid gap-4">
             <WorkspacePanel
@@ -810,6 +1046,70 @@ export function AdminSettingsPage() {
                   {testDeliveryMutation.isPending ? "发送中..." : "发送测试邮件"}
                 </Button>
               </div>
+              {deliveryTestDiagnostic.status !== "idle" ? (
+                <div className="mt-4 rounded-xl border border-border/60 bg-card/70 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="text-sm font-medium">最近一次 SMTP 测试</div>
+                    <WorkspaceBadge
+                      variant={
+                        deliveryTestDiagnostic.status === "success"
+                          ? "outline"
+                          : "destructive"
+                      }
+                    >
+                      {deliveryTestDiagnostic.status === "success"
+                        ? "Success"
+                        : "Failed"}
+                    </WorkspaceBadge>
+                    {deliveryTestDiagnostic.diagnostic?.code ? (
+                      <WorkspaceBadge variant="secondary">
+                        {deliveryTestDiagnostic.diagnostic.code}
+                      </WorkspaceBadge>
+                    ) : null}
+                    {typeof deliveryTestDiagnostic.diagnostic?.retryable === "boolean" ? (
+                      <WorkspaceBadge
+                        variant={
+                          deliveryTestDiagnostic.diagnostic.retryable
+                            ? "outline"
+                            : "secondary"
+                        }
+                      >
+                        {deliveryTestDiagnostic.diagnostic.retryable
+                          ? "Retryable"
+                          : "Check config"}
+                      </WorkspaceBadge>
+                    ) : null}
+                  </div>
+                  <div className="mt-3 space-y-3">
+                    <WorkspaceListRow
+                      title={deliveryTestDiagnostic.message ?? "暂无诊断信息"}
+                      description={
+                        deliveryTestDiagnostic.diagnostic?.hint ??
+                        (deliveryTestDiagnostic.status === "success"
+                          ? "如果未收到邮件，请再检查上游 SMTP 日志、垃圾箱或延迟投递情况。"
+                          : "后端未返回结构化诊断时，会自动回退到原始错误信息。")
+                      }
+                      meta={
+                        <>
+                          <WorkspaceBadge variant="outline">
+                            {deliveryTestDiagnostic.recipient || "未指定收件人"}
+                          </WorkspaceBadge>
+                          {deliveryTestDiagnostic.diagnostic?.stage ? (
+                            <WorkspaceBadge variant="secondary">
+                              stage: {deliveryTestDiagnostic.diagnostic.stage}
+                            </WorkspaceBadge>
+                          ) : null}
+                          {deliveryTestDiagnostic.testedAt ? (
+                            <span>{formatDateTime(deliveryTestDiagnostic.testedAt)}</span>
+                          ) : null}
+                        </>
+                      }
+                      titleClassName="whitespace-normal"
+                      descriptionClassName="whitespace-normal"
+                    />
+                  </div>
+                </div>
+              ) : null}
             </WorkspacePanel>
 
             <WorkspacePanel

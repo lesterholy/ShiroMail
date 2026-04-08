@@ -3,6 +3,7 @@ import type {
   AuthPasswordSettings,
   AuthRegistrationSettings,
   AuthSessionSettings,
+  APILimitsSettings,
   DomainPolicySettings,
   MailDeliverySettings,
   MailInboundSettings,
@@ -22,6 +23,7 @@ export const CONFIG_KEY_AUTH_OAUTH_PROVIDER_PREFIX = "auth.oauth.providers.";
 export const CONFIG_KEY_MAIL_SMTP = "mail.smtp";
 export const CONFIG_KEY_MAIL_DELIVERY = "mail.delivery";
 export const CONFIG_KEY_MAIL_INBOUND = "mail.inbound_policy";
+export const CONFIG_KEY_API_LIMITS = "api.limits";
 export const CONFIG_KEY_DOMAIN_POLICY = "domain.public_pool_policy";
 
 export const defaultSiteIdentitySettings: SiteIdentitySettings = {
@@ -173,6 +175,8 @@ export const defaultMailDeliverySettings: MailDeliverySettings = {
   password: "",
   fromAddress: "",
   fromName: "Shiro Email",
+  transportMode: "starttls",
+  insecureSkipVerify: false,
 };
 
 export const defaultMailInboundSettings: MailInboundSettings = {
@@ -182,6 +186,27 @@ export const defaultMailInboundSettings: MailInboundSettings = {
   maxAttachmentSizeMB: 15,
   rejectExecutableFiles: true,
   enableSpamScanningPreview: false,
+};
+
+export const defaultAPILimitsSettings: APILimitsSettings = {
+  enabled: true,
+  identityMode: "bearer_or_ip",
+  anonymousRPM: 120,
+  authenticatedRPM: 600,
+  authRPM: 10,
+  loginRPM: 10,
+  registerRPM: 10,
+  refreshRPM: 30,
+  forgotPasswordRPM: 10,
+  resetPasswordRPM: 10,
+  emailVerificationResendRPM: 10,
+  emailVerificationConfirmRPM: 30,
+  oauthStartRPM: 20,
+  oauthCallbackRPM: 20,
+  login2faVerifyRPM: 20,
+  mailboxWriteRPM: 1200,
+  strictIpEnabled: false,
+  strictIpRPM: 1800,
 };
 
 export const defaultDomainPolicySettings: DomainPolicySettings = {

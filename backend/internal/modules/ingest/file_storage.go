@@ -54,6 +54,40 @@ func (s *LocalFileStorage) ReadFile(_ context.Context, key string) ([]byte, erro
 	return os.ReadFile(filepath.Join(s.rootDir, filepath.FromSlash(key)))
 }
 
+func (s *LocalFileStorage) DeleteFilesOlderThan(_ context.Context, before time.Time) error {
+	if before.IsZero() {
+		return nil
+	}
+
+	for _, topLevel := range []string{"raw", "attachments"} {
+		root := filepath.Join(s.rootDir, topLevel)
+		if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+			if info.ModTime().After(before) {
+				return nil
+			}
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return nil
+		}); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err := removeEmptyDirectories(root); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *LocalFileStorage) key(kind string, mailboxAddress string, sourceMessageID string, fileName string) string {
 	now := time.Now().UTC()
 	parts := []string{
@@ -95,4 +129,38 @@ func sanitizePathSegment(value string) string {
 		return "item"
 	}
 	return cleaned
+}
+
+func removeEmptyDirectories(root string) error {
+	info, err := os.Stat(root)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if err := removeEmptyDirectories(filepath.Join(root, entry.Name())); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+
+	entries, err = os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		if err := os.Remove(root); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }

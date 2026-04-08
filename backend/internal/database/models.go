@@ -352,6 +352,26 @@ func (JobRow) TableName() string {
 	return "jobs"
 }
 
+type InboundMessageSpoolRow struct {
+	ID               uint64     `gorm:"column:id;primaryKey;autoIncrement"`
+	MailFrom         string     `gorm:"column:mail_from"`
+	RecipientsJSON   []byte     `gorm:"column:recipients_json"`
+	TargetMailboxIDs []byte     `gorm:"column:target_mailbox_ids_json"`
+	RawMessage       []byte     `gorm:"column:raw_message"`
+	Status           string     `gorm:"column:status"`
+	ErrorMessage     string     `gorm:"column:error_message"`
+	AttemptCount     int        `gorm:"column:attempt_count"`
+	MaxAttempts      int        `gorm:"column:max_attempts"`
+	CreatedAt        time.Time  `gorm:"column:created_at"`
+	UpdatedAt        time.Time  `gorm:"column:updated_at"`
+	NextAttemptAt    time.Time  `gorm:"column:next_attempt_at"`
+	ProcessedAt      *time.Time `gorm:"column:processed_at"`
+}
+
+func (InboundMessageSpoolRow) TableName() string {
+	return "inbound_message_spool"
+}
+
 type AuditLogRow struct {
 	ID           uint64    `gorm:"column:id;primaryKey;autoIncrement"`
 	ActorUserID  uint64    `gorm:"column:actor_user_id"`

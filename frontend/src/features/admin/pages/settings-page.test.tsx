@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   deleteAdminConfig,
   fetchAdminSettingsSections,
+  fetchAdminAPILimitsSettings,
   sendAdminMailDeliveryTest,
   upsertAdminConfig,
 } from "../api";
@@ -12,6 +13,7 @@ import { AdminSettingsPage } from "./settings-page";
 vi.mock("../api", () => ({
   deleteAdminConfig: vi.fn(),
   fetchAdminSettingsSections: vi.fn(),
+  fetchAdminAPILimitsSettings: vi.fn(),
   sendAdminMailDeliveryTest: vi.fn(),
   upsertAdminConfig: vi.fn(),
 }));
@@ -197,6 +199,38 @@ describe("AdminSettingsPage", () => {
         ],
       },
       {
+        key: "api",
+        title: "API 设置",
+        description: "API 速率限制、鉴权身份桶与严格 IP 限流策略。",
+        items: [
+          {
+            key: "api.limits",
+            value: {
+              enabled: true,
+              identityMode: "bearer_or_ip",
+              anonymousRPM: 120,
+              authenticatedRPM: 600,
+              authRPM: 10,
+              loginRPM: 10,
+              registerRPM: 10,
+              refreshRPM: 30,
+              forgotPasswordRPM: 10,
+              resetPasswordRPM: 10,
+              emailVerificationResendRPM: 10,
+              emailVerificationConfirmRPM: 30,
+              oauthStartRPM: 20,
+              oauthCallbackRPM: 20,
+              login2faVerifyRPM: 20,
+              mailboxWriteRPM: 1200,
+              strictIpEnabled: true,
+              strictIpRPM: 1800,
+            },
+            updatedBy: 3,
+            updatedAt: "2026-04-05T10:00:00Z",
+          },
+        ],
+      },
+      {
         key: "domain",
         title: "域名平台策略",
         description: "公开域发布审核等平台级域名策略。",
@@ -212,6 +246,26 @@ describe("AdminSettingsPage", () => {
         ],
       },
     ]);
+    vi.mocked(fetchAdminAPILimitsSettings).mockResolvedValue({
+      enabled: true,
+      identityMode: "bearer_or_ip",
+      anonymousRPM: 120,
+      authenticatedRPM: 600,
+      authRPM: 10,
+      loginRPM: 10,
+      registerRPM: 10,
+      refreshRPM: 30,
+      forgotPasswordRPM: 10,
+      resetPasswordRPM: 10,
+      emailVerificationResendRPM: 10,
+      emailVerificationConfirmRPM: 30,
+      oauthStartRPM: 20,
+      oauthCallbackRPM: 20,
+      login2faVerifyRPM: 20,
+      mailboxWriteRPM: 1200,
+      strictIpEnabled: true,
+      strictIpRPM: 1800,
+    });
 
     vi.mocked(upsertAdminConfig).mockImplementation(async (key, value) => ({
       key,
@@ -250,6 +304,7 @@ describe("AdminSettingsPage", () => {
     });
     expect(screen.getByRole("tab", { name: "OAuth 设置" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "用户设置" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "API 设置" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "其他设置" })).toBeInTheDocument();
     expect(vi.mocked(upsertAdminConfig)).not.toHaveBeenCalled();
   });
@@ -305,6 +360,50 @@ describe("AdminSettingsPage", () => {
         to: "sender@example.com",
       });
     });
+    expect(
+      await screen.findByText("最近一次 SMTP 测试"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Success")).toBeInTheDocument();
+  });
+
+  it("renders structured smtp diagnostics when the test request fails", async () => {
+    const diagnosticError = {
+      isAxiosError: true,
+      response: {
+        data: {
+          message: "mail delivery TLS handshake failed: server does not advertise STARTTLS",
+          stage: "tls",
+          code: "starttls_unavailable",
+          hint: "The server does not advertise STARTTLS. Switch to Plain SMTP / SMTPS, or enable STARTTLS on the server.",
+          retryable: false,
+        },
+      },
+    };
+    vi.mocked(sendAdminMailDeliveryTest).mockRejectedValueOnce(diagnosticError);
+
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AdminSettingsPage />
+      </QueryClientProvider>,
+    );
+
+    const otherTab = await screen.findByRole("tab", { name: "其他设置" });
+    otherTab.focus();
+    fireEvent.keyDown(otherTab, { key: "Enter", code: "Enter" });
+    await screen.findByText("账户邮件发信");
+    fireEvent.click(screen.getByRole("button", { name: "发送测试邮件" }));
+
+    expect(await screen.findByText("Failed")).toBeInTheDocument();
+    expect(screen.getByText("starttls_unavailable")).toBeInTheDocument();
+    expect(screen.getByText("stage: tls")).toBeInTheDocument();
+    expect(screen.getAllByText(/The server does not advertise STARTTLS/i).length).toBeGreaterThan(0);
   });
 
   it("deletes stale oauth provider configs when saving removed providers", async () => {
@@ -338,5 +437,77 @@ describe("AdminSettingsPage", () => {
         "auth.oauth.providers.github",
       );
     });
+  });
+
+  it("saves api limits settings from the dedicated api tab", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AdminSettingsPage />
+      </QueryClientProvider>,
+    );
+
+    const apiTab = await screen.findByRole("tab", { name: "API 设置" });
+    apiTab.focus();
+    fireEvent.keyDown(apiTab, { key: "Enter", code: "Enter" });
+
+    const strictIpInput = await screen.findByRole("spinbutton", {
+      name: "严格 IP RPM",
+    });
+    fireEvent.change(strictIpInput, { target: { value: "2400" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+
+    await waitFor(() => {
+      expect(vi.mocked(upsertAdminConfig)).toHaveBeenCalledWith("api.limits", {
+        enabled: true,
+        identityMode: "bearer_or_ip",
+        anonymousRPM: 120,
+        authenticatedRPM: 600,
+        authRPM: 10,
+        loginRPM: 10,
+        registerRPM: 10,
+        refreshRPM: 30,
+        forgotPasswordRPM: 10,
+        resetPasswordRPM: 10,
+        emailVerificationResendRPM: 10,
+        emailVerificationConfirmRPM: 30,
+        oauthStartRPM: 20,
+        oauthCallbackRPM: 20,
+        login2faVerifyRPM: 20,
+        mailboxWriteRPM: 1200,
+        strictIpEnabled: true,
+        strictIpRPM: 2400,
+      });
+    });
+  });
+
+  it("shows current effective api limit summary in api tab", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AdminSettingsPage />
+      </QueryClientProvider>,
+    );
+
+    const apiTab = await screen.findByRole("tab", { name: "API 设置" });
+    apiTab.focus();
+    fireEvent.keyDown(apiTab, { key: "Enter", code: "Enter" });
+
+    expect(await screen.findByText("Rate limit enabled")).toBeInTheDocument();
+    expect(screen.getByText("Bearer / IP mixed")).toBeInTheDocument();
+    expect(screen.getByText("120 / 600")).toBeInTheDocument();
+    expect(screen.getByText("1800 RPM")).toBeInTheDocument();
   });
 });

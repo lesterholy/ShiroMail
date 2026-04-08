@@ -13,7 +13,63 @@ import {
   fetchAdminDomainProviders,
   fetchAdminJobs,
 } from "../api";
+import {
+  describeInboundSpoolFailure,
+} from "../smtp-diagnostics";
 import { formatDateTime } from "../../user/pages/shared";
+
+function formatAuditEntry(item: Awaited<ReturnType<typeof fetchAdminAudit>>[number]) {
+  const detail = item.detail ?? {};
+  if (item.action === "admin.mail_delivery.test") {
+    const recipient =
+      typeof detail.recipient === "string" && detail.recipient.trim()
+        ? detail.recipient.trim()
+        : item.resourceId;
+    return {
+      title: "SMTP test sent",
+      description: `Delivery test was accepted for ${recipient}.`,
+      badges: [
+        { text: "smtp", variant: "outline" as const },
+        { text: "ok", variant: "outline" as const },
+      ],
+    };
+  }
+  if (item.action === "admin.mail_delivery.test_failed") {
+    const recipient =
+      typeof detail.recipient === "string" && detail.recipient.trim()
+        ? detail.recipient.trim()
+        : item.resourceId;
+    const code =
+      typeof detail.code === "string" && detail.code.trim()
+        ? detail.code.trim()
+        : "delivery_failed";
+    const stage =
+      typeof detail.stage === "string" && detail.stage.trim()
+        ? detail.stage.trim()
+        : "unknown";
+    const hint =
+      typeof detail.hint === "string" && detail.hint.trim()
+        ? detail.hint.trim()
+        : "Check SMTP settings and upstream server logs.";
+    const retryable =
+      typeof detail.retryable === "boolean" ? detail.retryable : false;
+    return {
+      title: `SMTP test failed · ${code}`,
+      description: `${recipient} · stage ${stage}. ${hint}`,
+      badges: [
+        { text: "smtp", variant: "outline" as const },
+        { text: "failed", variant: "destructive" as const },
+        { text: retryable ? "retryable" : "check config", variant: retryable ? "outline" as const : "secondary" as const },
+      ],
+    };
+  }
+
+  return {
+    title: item.action,
+    description: `${item.resourceType} / ${item.resourceId}`,
+    badges: [] as Array<{ text: string; variant: "default" | "secondary" | "outline" | "destructive" }>,
+  };
+}
 
 export function AdminResourcesPage() {
   const providersQuery = useQuery({
@@ -119,19 +175,36 @@ export function AdminResourcesPage() {
               </div>
               {jobItems.length ? (
                 <div className="space-y-3">
-                  {jobItems.slice(0, 5).map((item) => (
-                    <WorkspaceListRow
-                      description={item.errorMessage || "无异常"}
-                      key={item.id}
-                      meta={
-                        <>
-                          <WorkspaceBadge>{item.status}</WorkspaceBadge>
-                          <span>{formatDateTime(item.createdAt)}</span>
-                        </>
-                      }
-                      title={item.jobType}
-                    />
-                  ))}
+                  {jobItems.slice(0, 5).map((item) => {
+                    const failure = item.diagnostic ?? (item.errorMessage ? describeInboundSpoolFailure(item.errorMessage) : null);
+                    return (
+                      <WorkspaceListRow
+                        description={
+                          failure ? (
+                            <div className="space-y-1">
+                              <p>{failure.title}</p>
+                              <p className="text-muted-foreground">{failure.description}</p>
+                            </div>
+                          ) : (item.errorMessage || "无异常")
+                        }
+                        key={item.id}
+                        meta={
+                          <>
+                            <WorkspaceBadge>{item.status}</WorkspaceBadge>
+                            {failure ? (
+                              <WorkspaceBadge variant={failure.retryable ? "outline" : "secondary"}>
+                                {failure.retryable ? "retryable" : "check config"}
+                              </WorkspaceBadge>
+                            ) : null}
+                            <span>{formatDateTime(item.createdAt)}</span>
+                          </>
+                        }
+                        title={item.jobType}
+                        titleClassName="whitespace-normal"
+                        descriptionClassName="whitespace-normal"
+                      />
+                    );
+                  })}
                 </div>
               ) : (
                 <WorkspaceEmpty description="当前没有任务记录。" title="暂无任务" />
@@ -151,15 +224,22 @@ export function AdminResourcesPage() {
                 <div className="space-y-3">
                   {auditItems.map((item) => (
                     <WorkspaceListRow
-                      description={`${item.resourceType} / ${item.resourceId}`}
+                      description={formatAuditEntry(item).description}
                       key={item.id}
                       meta={
                         <>
+                          {formatAuditEntry(item).badges.map((badge) => (
+                            <WorkspaceBadge key={`${item.id}-${badge.text}`} variant={badge.variant}>
+                              {badge.text}
+                            </WorkspaceBadge>
+                          ))}
                           <span>{formatDateTime(item.createdAt)}</span>
                           <WorkspaceBadge variant="outline">actor #{item.actorUserId}</WorkspaceBadge>
                         </>
                       }
-                      title={item.action}
+                      title={formatAuditEntry(item).title}
+                      titleClassName="whitespace-normal"
+                      descriptionClassName="whitespace-normal"
                     />
                   ))}
                 </div>

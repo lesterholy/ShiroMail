@@ -89,6 +89,8 @@ SMTP 相关需要特别注意：
 - 运行时 SMTP 监听配置来自 MySQL 中的系统设置，而不是固定写死在容器环境变量里。
 - `docker-compose.yml` 默认将宿主机 `25` 映射到容器内 `2525`。
 - 请在管理后台里配置 `mail.smtp` 对应的启用状态、监听地址、Hostname / MX Target、最大邮件大小等参数。
+- SMTP 测试发信失败时，接口会返回结构化诊断字段：`stage`、`code`、`hint`、`retryable`，同时也会写入管理员审计日志，方便后续排障。
+- 当前内置的诊断码包括：`connect_failed`、`starttls_unavailable`、`tls_certificate_invalid`、`auth_unavailable`、`sender_rejected`、`recipient_rejected`、`data_failed`、`quit_failed`、`timeout`。
 
 典型公网收件 DNS 结构：
 

@@ -7,6 +7,68 @@ import (
 	"time"
 )
 
+type InboundSpoolRecord struct {
+	ID               uint64                `json:"id"`
+	MailFrom         string                `json:"mailFrom"`
+	Recipients       []string              `json:"recipients"`
+	TargetMailboxIDs []uint64              `json:"targetMailboxIds"`
+	Status           string                `json:"status"`
+	ErrorMessage     string                `json:"errorMessage,omitempty"`
+	Diagnostic       *SMTPStatusDiagnostic `json:"diagnostic,omitempty"`
+	AttemptCount     int                   `json:"attemptCount"`
+	MaxAttempts      int                   `json:"maxAttempts"`
+	CreatedAt        time.Time             `json:"createdAt"`
+	UpdatedAt        time.Time             `json:"updatedAt"`
+	NextAttemptAt    time.Time             `json:"nextAttemptAt"`
+	ProcessedAt      *time.Time            `json:"processedAt,omitempty"`
+}
+
+type InboundSpoolListOptions struct {
+	Status      string
+	FailureMode string
+	Page        int
+	PageSize    int
+}
+
+type InboundSpoolSummary struct {
+	Total      int `json:"total"`
+	Pending    int `json:"pending"`
+	Processing int `json:"processing"`
+	Completed  int `json:"completed"`
+	Failed     int `json:"failed"`
+}
+
+type InboundSpoolFailureReason struct {
+	Message    string                `json:"message"`
+	Count      int                   `json:"count"`
+	Diagnostic *SMTPStatusDiagnostic `json:"diagnostic,omitempty"`
+}
+
+type InboundSpoolListResult struct {
+	Items          []InboundSpoolRecord        `json:"items"`
+	Total          int                         `json:"total"`
+	Page           int                         `json:"page"`
+	PageSize       int                         `json:"pageSize"`
+	Summary        InboundSpoolSummary         `json:"summary"`
+	FailureReasons []InboundSpoolFailureReason `json:"failureReasons"`
+}
+
+type SMTPMetricsSnapshot struct {
+	SessionsStarted    int64              `json:"sessionsStarted"`
+	RecipientsAccepted int64              `json:"recipientsAccepted"`
+	BytesReceived      int64              `json:"bytesReceived"`
+	Accepted           map[string]int64   `json:"accepted"`
+	Rejected           map[string]int64   `json:"rejected"`
+	RejectedDetails    []SMTPMetricReason `json:"rejectedDetails,omitempty"`
+	SpoolProcessed     map[string]int64   `json:"spoolProcessed"`
+}
+
+type SMTPMetricReason struct {
+	Key        string               `json:"key"`
+	Count      int64                `json:"count"`
+	Diagnostic SMTPStatusDiagnostic `json:"diagnostic"`
+}
+
 type DomainPublicPoolPolicy struct {
 	RequiresReview bool `json:"requiresReview"`
 }
@@ -26,11 +88,12 @@ type SettingsSection struct {
 }
 
 type JobRecord struct {
-	ID           uint64    `json:"id"`
-	JobType      string    `json:"jobType"`
-	Status       string    `json:"status"`
-	ErrorMessage string    `json:"errorMessage,omitempty"`
-	CreatedAt    time.Time `json:"createdAt"`
+	ID           uint64                `json:"id"`
+	JobType      string                `json:"jobType"`
+	Status       string                `json:"status"`
+	ErrorMessage string                `json:"errorMessage,omitempty"`
+	Diagnostic   *SMTPStatusDiagnostic `json:"diagnostic,omitempty"`
+	CreatedAt    time.Time             `json:"createdAt"`
 }
 
 type AuditLog struct {
@@ -46,6 +109,13 @@ type AuditLog struct {
 type MailDeliveryTestResult struct {
 	Status    string `json:"status"`
 	Recipient string `json:"recipient"`
+}
+
+type MailDeliveryDiagnostic struct {
+	Stage     string `json:"stage,omitempty"`
+	Code      string `json:"code,omitempty"`
+	Hint      string `json:"hint,omitempty"`
+	Retryable bool   `json:"retryable"`
 }
 
 type ConfigRepository interface {

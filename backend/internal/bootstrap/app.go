@@ -163,6 +163,34 @@ func resolveSMTPRuntimeSettings(ctx context.Context, repo system.ConfigRepositor
 	}
 }
 
+func resolveAPILimitsRuntimeSettings(ctx context.Context, repo system.ConfigRepository) system.APILimitsConfig {
+	stored, err := system.LoadAPILimitsSettings(ctx, repo)
+	if err != nil {
+		slog.Warn("api rate limit config fallback to defaults", "error", err)
+		stored = system.APILimitsConfig{
+			Enabled:                     true,
+			IdentityMode:                "bearer_or_ip",
+			AnonymousRPM:                120,
+			AuthenticatedRPM:            600,
+			AuthRPM:                     10,
+			LoginRPM:                    10,
+			RegisterRPM:                 10,
+			RefreshRPM:                  30,
+			ForgotPasswordRPM:           10,
+			ResetPasswordRPM:            10,
+			EmailVerificationResendRPM:  10,
+			EmailVerificationConfirmRPM: 30,
+			OAuthStartRPM:               20,
+			OAuthCallbackRPM:            20,
+			Login2FAVerifyRPM:           20,
+			MailboxWriteRPM:             1200,
+			StrictIPEnabled:             false,
+			StrictIPRPM:                 1800,
+		}
+	}
+	return stored
+}
+
 func NewRouterForTest() http.Handler {
 	handler, _ := NewTestApp()
 	return handler
@@ -243,37 +271,236 @@ func buildRouter(cfg config.Config, state *AppState) *gin.Engine {
 	ruleController := rule.NewController(ruleService)
 	extractorService := extractor.NewService(state.ExtractorRepo, state.MailboxRepo, messageService, state.AuditRepo)
 	extractorController := extractor.NewController(extractorService)
-	systemService := system.NewService(state.ConfigRepo, state.JobRepo, state.AuditRepo)
+	var spoolList any
+	var spoolRetry any
+	var smtpMetrics any
+	if state.DirectIngest != nil {
+		spoolList = system.InboundSpoolListFunc(func(ctx context.Context) ([]system.InboundSpoolRecord, error) {
+			items, err := state.DirectIngest.ListSpool(ctx)
+			if err != nil {
+				return nil, err
+			}
+			records := make([]system.InboundSpoolRecord, 0, len(items))
+			for _, item := range items {
+				records = append(records, system.InboundSpoolRecord{
+					ID:               item.ID,
+					MailFrom:         item.MailFrom,
+					Recipients:       append([]string{}, item.Recipients...),
+					TargetMailboxIDs: append([]uint64{}, item.TargetMailboxIDs...),
+					Status:           item.Status,
+					ErrorMessage:     item.ErrorMessage,
+					AttemptCount:     item.AttemptCount,
+					MaxAttempts:      item.MaxAttempts,
+					CreatedAt:        item.CreatedAt,
+					UpdatedAt:        item.UpdatedAt,
+					NextAttemptAt:    item.NextAttemptAt,
+					ProcessedAt:      item.ProcessedAt,
+				})
+			}
+			return records, nil
+		})
+		spoolRetry = system.InboundSpoolRetryFunc(func(ctx context.Context, id uint64) (system.InboundSpoolRecord, error) {
+			item, err := state.DirectIngest.RetrySpoolItem(ctx, id)
+			if err != nil {
+				if errors.Is(err, ingest.ErrSpoolItemNotFound) {
+					return system.InboundSpoolRecord{}, system.ErrInboundSpoolItemNotFound
+				}
+				return system.InboundSpoolRecord{}, err
+			}
+			return system.InboundSpoolRecord{
+				ID:               item.ID,
+				MailFrom:         item.MailFrom,
+				Recipients:       append([]string{}, item.Recipients...),
+				TargetMailboxIDs: append([]uint64{}, item.TargetMailboxIDs...),
+				Status:           item.Status,
+				ErrorMessage:     item.ErrorMessage,
+				AttemptCount:     item.AttemptCount,
+				MaxAttempts:      item.MaxAttempts,
+				CreatedAt:        item.CreatedAt,
+				UpdatedAt:        item.UpdatedAt,
+				NextAttemptAt:    item.NextAttemptAt,
+				ProcessedAt:      item.ProcessedAt,
+			}, nil
+		})
+	}
+	smtpMetrics = system.SMTPMetricsSnapshotFunc(func(context.Context) (system.SMTPMetricsSnapshot, error) {
+		snapshot := middleware.SnapshotSMTPMetrics()
+		return system.SMTPMetricsSnapshot{
+			SessionsStarted:    snapshot.SessionsStarted,
+			RecipientsAccepted: snapshot.RecipientsAccepted,
+			BytesReceived:      snapshot.BytesReceived,
+			Accepted:           snapshot.Accepted,
+			Rejected:           snapshot.Rejected,
+			SpoolProcessed:     snapshot.SpoolProcessed,
+		}, nil
+	})
+	systemService := system.NewService(state.ConfigRepo, state.JobRepo, state.AuditRepo, spoolList, spoolRetry, smtpMetrics)
 	systemController := system.NewController(systemService)
 	authGuard := middleware.RequireAuth(cfg.JWTSecret)
 	apiKeyGuard := middleware.RequireUserOrAPIKey(cfg.JWTSecret, state.PortalRepo, state.AuthRepo)
 	adminGuard := []gin.HandlerFunc{apiKeyGuard, middleware.RequireRoles("admin")}
 
-	var authRL, generalRL gin.HandlerFunc
+	var authRL, loginRL, registerRL, refreshRL, forgotPasswordRL, resetPasswordRL, emailVerificationResendRL, emailVerificationConfirmRL, oauthStartRL, oauthCallbackRL, login2FAVerifyRL, generalRL, mailboxWriteRL, strictIPRL gin.HandlerFunc
 	if state.RedisClient != nil {
 		rl := middleware.NewRateLimiter(state.RedisClient)
-		authRL = rl.Limit("auth", 10, time.Minute)
-		generalRL = rl.Limit("api", 120, time.Minute)
+		apiLimitsCache := newAPILimitsRuntimeCache(state.ConfigRepo)
+
+		authRL = rl.LimitDynamic("auth", time.Minute, func(ctx *gin.Context) int {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			if !current.Enabled {
+				return 0
+			}
+			return current.AuthRPM
+		}, middleware.RequestIPRateLimitKey)
+		loginRL = rl.LimitDynamic("auth-login", time.Minute, func(ctx *gin.Context) int {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			if !current.Enabled {
+				return 0
+			}
+			return current.LoginRPM
+		}, middleware.RequestIPRateLimitKey)
+		registerRL = rl.LimitDynamic("auth-register", time.Minute, func(ctx *gin.Context) int {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			if !current.Enabled {
+				return 0
+			}
+			return current.RegisterRPM
+		}, middleware.RequestIPRateLimitKey)
+		refreshRL = rl.LimitDynamic("auth-refresh", time.Minute, func(ctx *gin.Context) int {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			if !current.Enabled {
+				return 0
+			}
+			return current.RefreshRPM
+		}, middleware.RequestIPRateLimitKey)
+		forgotPasswordRL = rl.LimitDynamic("auth-forgot-password", time.Minute, func(ctx *gin.Context) int {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			if !current.Enabled {
+				return 0
+			}
+			return current.ForgotPasswordRPM
+		}, middleware.RequestIPRateLimitKey)
+		resetPasswordRL = rl.LimitDynamic("auth-reset-password", time.Minute, func(ctx *gin.Context) int {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			if !current.Enabled {
+				return 0
+			}
+			return current.ResetPasswordRPM
+		}, middleware.RequestIPRateLimitKey)
+		emailVerificationResendRL = rl.LimitDynamic("auth-email-verification-resend", time.Minute, func(ctx *gin.Context) int {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			if !current.Enabled {
+				return 0
+			}
+			return current.EmailVerificationResendRPM
+		}, middleware.RequestIPRateLimitKey)
+		emailVerificationConfirmRL = rl.LimitDynamic("auth-email-verification-confirm", time.Minute, func(ctx *gin.Context) int {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			if !current.Enabled {
+				return 0
+			}
+			return current.EmailVerificationConfirmRPM
+		}, middleware.RequestIPRateLimitKey)
+		oauthStartRL = rl.LimitDynamic("auth-oauth-start", time.Minute, func(ctx *gin.Context) int {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			if !current.Enabled {
+				return 0
+			}
+			return current.OAuthStartRPM
+		}, middleware.RequestIPRateLimitKey)
+		oauthCallbackRL = rl.LimitDynamic("auth-oauth-callback", time.Minute, func(ctx *gin.Context) int {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			if !current.Enabled {
+				return 0
+			}
+			return current.OAuthCallbackRPM
+		}, middleware.RequestIPRateLimitKey)
+		login2FAVerifyRL = rl.LimitDynamic("auth-login-2fa-verify", time.Minute, func(ctx *gin.Context) int {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			if !current.Enabled {
+				return 0
+			}
+			return current.Login2FAVerifyRPM
+		}, middleware.RequestIPRateLimitKey)
+		generalRL = rl.LimitDynamic("api", time.Minute, func(ctx *gin.Context) int {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			if !current.Enabled {
+				return 0
+			}
+			if middleware.RequestHasBearerCredential(ctx) {
+				return current.AuthenticatedRPM
+			}
+			return current.AnonymousRPM
+		}, func(ctx *gin.Context) string {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			return middleware.RequestRateLimitKeyWithMode(current.IdentityMode)(ctx)
+		})
+		mailboxWriteRL = rl.LimitDynamic("mailboxes-write", time.Minute, func(ctx *gin.Context) int {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			if !current.Enabled {
+				return 0
+			}
+			return current.MailboxWriteRPM
+		}, func(ctx *gin.Context) string {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			return middleware.RequestRateLimitKeyWithMode(current.IdentityMode)(ctx)
+		})
+		strictIPRL = rl.LimitDynamic("api-strict-ip", time.Minute, func(ctx *gin.Context) int {
+			current := apiLimitsCache.Current(ctx.Request.Context())
+			if !current.Enabled || !current.StrictIPEnabled {
+				return 0
+			}
+			return current.StrictIPRPM
+		}, middleware.RequestIPRateLimitKey)
 	} else {
 		noop := func(ctx *gin.Context) { ctx.Next() }
 		authRL = noop
+		loginRL = noop
+		registerRL = noop
+		refreshRL = noop
+		forgotPasswordRL = noop
+		resetPasswordRL = noop
+		emailVerificationResendRL = noop
+		emailVerificationConfirmRL = noop
+		oauthStartRL = noop
+		oauthCallbackRL = noop
+		login2FAVerifyRL = noop
 		generalRL = noop
+		mailboxWriteRL = noop
+		strictIPRL = noop
+	}
+	if authRL == nil {
+		noop := func(ctx *gin.Context) { ctx.Next() }
+		authRL = noop
+		loginRL = noop
+		registerRL = noop
+		refreshRL = noop
+		forgotPasswordRL = noop
+		resetPasswordRL = noop
+		emailVerificationResendRL = noop
+		emailVerificationConfirmRL = noop
+		oauthStartRL = noop
+		oauthCallbackRL = noop
+		login2FAVerifyRL = noop
+		generalRL = noop
+		mailboxWriteRL = noop
+		strictIPRL = noop
 	}
 
 	api := engine.Group("/api/v1")
-	api.Use(generalRL)
-	api.POST("/auth/register", authRL, authController.Register)
-	api.POST("/auth/login", authRL, authController.Login)
+	api.Use(generalRL, strictIPRL)
+	api.POST("/auth/register", authRL, registerRL, authController.Register)
+	api.POST("/auth/login", authRL, loginRL, authController.Login)
 	api.GET("/auth/settings", authController.Settings)
 	api.GET("/site/settings", systemController.PublicSiteSettings)
-	api.POST("/auth/forgot-password", authRL, authController.ForgotPassword)
-	api.POST("/auth/reset-password", authRL, authController.ResetPassword)
-	api.POST("/auth/email-verification/confirm", authController.ConfirmEmailVerification)
-	api.POST("/auth/email-verification/resend", authController.ResendEmailVerification)
-	api.POST("/auth/oauth/:provider/start", authController.StartOAuth)
-	api.POST("/auth/oauth/:provider/callback", authController.CompleteOAuth)
-	api.POST("/auth/login/2fa/verify", authRL, authController.VerifyLoginTOTP)
-	api.POST("/auth/refresh", authController.Refresh)
+	api.POST("/auth/forgot-password", authRL, forgotPasswordRL, authController.ForgotPassword)
+	api.POST("/auth/reset-password", authRL, resetPasswordRL, authController.ResetPassword)
+	api.POST("/auth/email-verification/confirm", emailVerificationConfirmRL, authController.ConfirmEmailVerification)
+	api.POST("/auth/email-verification/resend", emailVerificationResendRL, authController.ResendEmailVerification)
+	api.POST("/auth/oauth/:provider/start", oauthStartRL, authController.StartOAuth)
+	api.POST("/auth/oauth/:provider/callback", oauthCallbackRL, authController.CompleteOAuth)
+	api.POST("/auth/login/2fa/verify", authRL, login2FAVerifyRL, authController.VerifyLoginTOTP)
+	api.POST("/auth/refresh", refreshRL, authController.Refresh)
 	api.POST("/auth/logout", authGuard, authController.Logout)
 	api.GET("/account/profile", authGuard, authController.GetAccountProfile)
 	api.PATCH("/account/profile", authGuard, authController.UpdateAccountProfile)
@@ -294,9 +521,9 @@ func buildRouter(cfg config.Config, state *AppState) *gin.Engine {
 	api.POST("/domains/:id/public-pool/withdraw", apiKeyGuard, middleware.RequireAPIScope("domains.unpublish"), domainController.WithdrawPublicPoolPublication)
 	api.GET("/dashboard", apiKeyGuard, middleware.RequireAPIScope("mailboxes.read"), middleware.RequireAPIScope("domains.read"), mailboxController.Dashboard)
 	api.GET("/mailboxes", apiKeyGuard, middleware.RequireAPIScope("mailboxes.read"), mailboxController.List)
-	api.POST("/mailboxes", apiKeyGuard, middleware.RequireAPIScope("mailboxes.write"), mailboxController.Create)
-	api.POST("/mailboxes/:mailboxId/extend", apiKeyGuard, middleware.RequireAPIScope("mailboxes.write"), mailboxController.Extend)
-	api.POST("/mailboxes/:mailboxId/release", apiKeyGuard, middleware.RequireAPIScope("mailboxes.write"), mailboxController.Release)
+	api.POST("/mailboxes", mailboxWriteRL, apiKeyGuard, middleware.RequireAPIScope("mailboxes.write"), mailboxController.Create)
+	api.POST("/mailboxes/:mailboxId/extend", mailboxWriteRL, apiKeyGuard, middleware.RequireAPIScope("mailboxes.write"), mailboxController.Extend)
+	api.POST("/mailboxes/:mailboxId/release", mailboxWriteRL, apiKeyGuard, middleware.RequireAPIScope("mailboxes.write"), mailboxController.Release)
 	api.GET("/mailboxes/:mailboxId/messages", apiKeyGuard, middleware.RequireAPIScope("messages.read"), messageController.ListByMailbox)
 	api.GET("/mailboxes/:mailboxId/messages/:id", apiKeyGuard, middleware.RequireAPIScope("messages.read"), messageController.Detail)
 	api.GET("/mailboxes/:mailboxId/messages/:id/extractions", apiKeyGuard, middleware.RequireAPIScope("messages.read"), extractorController.ListMessageExtractions)
@@ -356,9 +583,9 @@ func buildRouter(cfg config.Config, state *AppState) *gin.Engine {
 	adminGroup.DELETE("/domain-providers/:id", adminController.DeleteDomainProvider)
 	adminGroup.GET("/mailboxes", adminController.ListMailboxes)
 	adminGroup.GET("/mailboxes/domains", adminController.ListMailboxDomains)
-	adminGroup.POST("/mailboxes", adminController.CreateMailbox)
-	adminGroup.POST("/mailboxes/:mailboxId/extend", adminController.ExtendMailbox)
-	adminGroup.POST("/mailboxes/:mailboxId/release", adminController.ReleaseMailbox)
+	adminGroup.POST("/mailboxes", mailboxWriteRL, adminController.CreateMailbox)
+	adminGroup.POST("/mailboxes/:mailboxId/extend", mailboxWriteRL, adminController.ExtendMailbox)
+	adminGroup.POST("/mailboxes/:mailboxId/release", mailboxWriteRL, adminController.ReleaseMailbox)
 	adminGroup.GET("/mailboxes/:mailboxId/messages", adminController.ListMailboxMessages)
 	adminGroup.GET("/mailboxes/:mailboxId/messages/:id", adminController.MailboxMessageDetail)
 	adminGroup.GET("/mailboxes/:mailboxId/messages/:id/raw", adminController.MailboxMessageRaw)
@@ -403,10 +630,14 @@ func buildRouter(cfg config.Config, state *AppState) *gin.Engine {
 	adminGroup.GET("/mailboxes/:mailboxId/messages/:id/extractions", extractorController.ListAdminMessageExtractions)
 	adminGroup.GET("/configs", systemController.ListConfigs)
 	adminGroup.GET("/settings/sections", systemController.ListSettingsSections)
+	adminGroup.GET("/settings/api-limits", systemController.APILimitsSettings)
 	adminGroup.PUT("/configs/:key", systemController.UpsertConfig)
 	adminGroup.DELETE("/configs/:key", systemController.DeleteConfig)
 	adminGroup.POST("/configs/mail.delivery/test", systemController.SendMailDeliveryTest)
 	adminGroup.GET("/jobs", systemController.ListJobs)
+	adminGroup.GET("/jobs/inbound-spool", systemController.ListInboundSpool)
+	adminGroup.POST("/jobs/inbound-spool/:id/retry", systemController.RetryInboundSpool)
+	adminGroup.GET("/jobs/smtp-metrics", systemController.SMTPMetrics)
 	adminGroup.GET("/audit", systemController.ListAudit)
 
 	return engine
@@ -432,7 +663,7 @@ func MustRunWorker() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -441,7 +672,7 @@ func MustRunWorker() {
 			slog.Info("worker shutdown", "reason", ctx.Err())
 			return
 		case <-ticker.C:
-			if err := runWorkerCycle(ctx, state.MailboxRepo, state.MessageRepo, syncService); err != nil {
+			if err := runWorkerCycle(ctx, state.MailboxRepo, state.MessageRepo, state.ConfigRepo, state.MailStorage, state.DirectIngest, syncService, state.JobRepo); err != nil {
 				slog.Error("worker cycle failed", "error", err)
 				continue
 			}
@@ -518,6 +749,18 @@ func newRuntimePersistentState(cfg config.Config) (*AppState, error) {
 	state.DirectIngest, state.MailStorage, err = newDirectIngestService(cfg.MailStoragePath, state.MailboxRepo, state.MessageRepo)
 	if err != nil {
 		return nil, fmt.Errorf("init direct ingest service: %w", err)
+	}
+	if state.DirectIngest != nil {
+		state.DirectIngest.SetSpoolRepository(ingest.NewMySQLSpoolRepository(db))
+	}
+	if state.DirectIngest != nil {
+		state.DirectIngest.SetInboundPolicyProvider(func(ctx context.Context, targets []mailbox.Mailbox) (ingest.InboundPolicy, error) {
+			settings, err := system.LoadMailInboundPolicySettings(ctx, state.ConfigRepo)
+			if err != nil {
+				return ingest.InboundPolicy{}, err
+			}
+			return resolveInboundPolicyForTargets(settings, targets), nil
+		})
 	}
 
 	state.WSHub = realtime.NewHub()
@@ -826,4 +1069,53 @@ func newDirectIngestService(root string, mailboxRepo mailbox.Repository, message
 		return nil, nil, err
 	}
 	return ingest.NewDirectService(mailboxRepo, messageRepo, storage), storage, nil
+}
+
+func resolveInboundPolicyForTargets(settings system.MailInboundPolicyConfig, targets []mailbox.Mailbox) ingest.InboundPolicy {
+	base := ingest.InboundPolicy{
+		MaxAttachmentSizeBytes: inboundPolicySizeBytes(settings.MaxAttachmentSizeMB),
+		RejectExecutableFiles:  settings.RejectExecutableFiles,
+	}
+	if len(targets) == 0 {
+		return base
+	}
+
+	effective := ingest.InboundPolicy{}
+	firstTarget := true
+	for _, target := range targets {
+		current := base
+		domainName := strings.ToLower(strings.TrimSpace(target.Domain))
+		if override, ok := settings.DomainOverrides[domainName]; ok && override.Enabled {
+			current = ingest.InboundPolicy{
+				MaxAttachmentSizeBytes: inboundPolicySizeBytes(override.MaxAttachmentSizeMB),
+				RejectExecutableFiles:  override.RejectExecutableFiles,
+			}
+		}
+
+		if firstTarget {
+			effective = current
+			firstTarget = false
+			continue
+		}
+		effective = mergeRestrictiveInboundPolicy(effective, current)
+	}
+	return effective
+}
+
+func inboundPolicySizeBytes(sizeMB int) int64 {
+	if sizeMB <= 0 {
+		return 0
+	}
+	return int64(sizeMB) * 1024 * 1024
+}
+
+func mergeRestrictiveInboundPolicy(current ingest.InboundPolicy, next ingest.InboundPolicy) ingest.InboundPolicy {
+	switch {
+	case current.MaxAttachmentSizeBytes <= 0:
+		current.MaxAttachmentSizeBytes = next.MaxAttachmentSizeBytes
+	case next.MaxAttachmentSizeBytes > 0 && next.MaxAttachmentSizeBytes < current.MaxAttachmentSizeBytes:
+		current.MaxAttachmentSizeBytes = next.MaxAttachmentSizeBytes
+	}
+	current.RejectExecutableFiles = current.RejectExecutableFiles || next.RejectExecutableFiles
+	return current
 }

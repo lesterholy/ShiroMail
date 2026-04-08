@@ -327,6 +327,22 @@ func (s *Service) ReceiveRawMessage(ctx context.Context, userID uint64, mailboxI
 	if err != nil {
 		return Message{}, err
 	}
+	if stored.SourceKind == "smtp-spool" {
+		now := time.Now().UTC()
+		return Message{
+			MailboxID:        mailboxID,
+			SourceKind:       stored.SourceKind,
+			SourceMessageID:  stored.SourceMessageID,
+			MailboxAddress:   targetMailbox.Address,
+			FromAddr:         strings.TrimSpace(mailFrom),
+			ToAddr:           targetMailbox.Address,
+			IsRead:           false,
+			IsDeleted:        false,
+			ReceivedAt:       now,
+			LegacyMailboxKey: targetMailbox.Address,
+			LegacyMessageKey: stored.SourceMessageID,
+		}, nil
+	}
 
 	items, err := s.repo.ListByMailboxID(ctx, mailboxID)
 	if err != nil {
