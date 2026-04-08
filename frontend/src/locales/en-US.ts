@@ -154,7 +154,7 @@ const translation = {
     password: "Password",
     accountPlaceholder: "Enter username or email",
     passwordPlaceholder: "Enter password",
-    submit: "Enter workspace",
+    submit: "Sign in",
     pending: "Signing in...",
     userTitle: "User",
     userDescription: "Go to the user dashboard after sign-in",

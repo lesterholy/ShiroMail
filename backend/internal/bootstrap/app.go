@@ -334,7 +334,21 @@ func buildRouter(cfg config.Config, state *AppState) *gin.Engine {
 			SpoolProcessed:     snapshot.SpoolProcessed,
 		}, nil
 	})
-	systemService := system.NewService(state.ConfigRepo, state.JobRepo, state.AuditRepo, spoolList, spoolRetry, smtpMetrics)
+	publicStatsProvider := system.PublicSiteStatsFunc(func(ctx context.Context) (system.PublicSiteStats, error) {
+		users, err := state.AuthRepo.ListUsers(ctx)
+		if err != nil {
+			return system.PublicSiteStats{}, err
+		}
+		return system.PublicSiteStats{
+			ActiveMailboxCount: state.MailboxRepo.CountActive(ctx),
+			TodayMessageCount:  state.MessageRepo.CountToday(ctx),
+			ActiveDomainCount:  state.DomainRepo.CountActive(ctx),
+			TotalUserCount:     len(users),
+			FailedJobCount:     state.JobRepo.CountFailed(ctx),
+			UpdatedAt:          time.Now().UTC(),
+		}, nil
+	})
+	systemService := system.NewService(state.ConfigRepo, state.JobRepo, state.AuditRepo, spoolList, spoolRetry, smtpMetrics, publicStatsProvider)
 	systemController := system.NewController(systemService)
 	authGuard := middleware.RequireAuth(cfg.JWTSecret)
 	apiKeyGuard := middleware.RequireUserOrAPIKey(cfg.JWTSecret, state.PortalRepo, state.AuthRepo)
@@ -493,6 +507,7 @@ func buildRouter(cfg config.Config, state *AppState) *gin.Engine {
 	api.POST("/auth/login", authRL, loginRL, authController.Login)
 	api.GET("/auth/settings", authController.Settings)
 	api.GET("/site/settings", systemController.PublicSiteSettings)
+	api.GET("/site/stats", systemController.PublicSiteStats)
 	api.POST("/auth/forgot-password", authRL, forgotPasswordRL, authController.ForgotPassword)
 	api.POST("/auth/reset-password", authRL, resetPasswordRL, authController.ResetPassword)
 	api.POST("/auth/email-verification/confirm", emailVerificationConfirmRL, authController.ConfirmEmailVerification)

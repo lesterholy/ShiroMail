@@ -144,7 +144,7 @@ const translation = {
     password: "密码",
     accountPlaceholder: "输入用户名或邮箱",
     passwordPlaceholder: "输入密码",
-    submit: "进入工作台",
+    submit: "登录",
     pending: "登录中...",
     userTitle: "普通用户",
     userDescription: "进入用户仪表盘",

@@ -15,7 +15,21 @@ export type PublicSiteSettings = {
   };
 };
 
+export type PublicSiteStats = {
+  activeMailboxCount: number;
+  todayMessageCount: number;
+  activeDomainCount: number;
+  totalUserCount: number;
+  failedJobCount: number;
+  updatedAt: string;
+};
+
 export async function fetchPublicSiteSettings() {
   const { data } = await http.get<PublicSiteSettings>("/site/settings");
+  return data;
+}
+
+export async function fetchPublicSiteStats() {
+  const { data } = await http.get<PublicSiteStats>("/site/stats");
   return data;
 }

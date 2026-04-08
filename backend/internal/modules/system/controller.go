@@ -43,6 +43,15 @@ func (c *Controller) PublicSiteSettings(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, item)
 }
 
+func (c *Controller) PublicSiteStats(ctx *gin.Context) {
+	item, err := c.service.PublicStats(ctx)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"message": "failed to load public site stats"})
+		return
+	}
+	ctx.JSON(http.StatusOK, item)
+}
+
 func (c *Controller) APILimitsSettings(ctx *gin.Context) {
 	item, err := c.service.APILimitsSettings(ctx)
 	if err != nil {

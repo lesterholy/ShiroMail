@@ -17,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { useAutoDismiss } from "@/hooks/use-auto-dismiss";
 import { composePageTitle, usePageTitle } from "@/hooks/use-page-title";
 import { useSiteName } from "@/hooks/use-site-name";
-import { ArrowRight, KeyRound, ShieldCheck, UserRound } from "lucide-react";
+import { ArrowRight, KeyRound, Shield, Sparkles } from "lucide-react";
 import {
   type AuthSettings,
   getAuthErrorMessage,
@@ -92,6 +92,18 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
           : mode === "two-factor"
             ? t("auth.twoFactorTitle")
             : t("auth.forgotPasswordTitle");
+  const modeDescription =
+    mode === "login"
+      ? t("auth.description")
+      : mode === "register"
+        ? t("auth.registerDescription")
+        : mode === "forgot"
+          ? t("auth.forgotPasswordDescription")
+          : mode === "two-factor"
+            ? t("auth.twoFactorDescription")
+            : t("auth.resetHint");
+  const inputClassName =
+    "h-9 bg-background transition-colors duration-200";
 
   usePageTitle(open ? dialogTitle : null);
 
@@ -274,48 +286,54 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md gap-0 overflow-hidden p-0">
-        <div className="space-y-5 p-5">
-          <DialogHeader className="space-y-3 text-left">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge className="w-fit rounded-full" variant="outline">
-                {t("auth.secureAccess")}
-              </Badge>
-              <Badge className="w-fit rounded-full" variant="secondary">
-                {registrationMessage}
-              </Badge>
-            </div>
-            <div className="space-y-1.5">
-              <DialogTitle>
-                {dialogTitle}
-              </DialogTitle>
-              <DialogDescription className="text-xs leading-6">
-                {mode === "login"
-                  ? t("auth.description")
-                  : mode === "register"
-                    ? t("auth.registerDescription")
-                    : mode === "forgot"
-                      ? t("auth.forgotPasswordDescription")
-                      : mode === "two-factor"
-                        ? t("auth.twoFactorDescription")
-                      : t("auth.resetHint")}
-              </DialogDescription>
-              {authSettings?.requireEmailVerification ? (
-                <p className="text-xs leading-6 text-muted-foreground">
-                  {t("auth.emailVerificationRequired")}
-                </p>
-              ) : null}
-            </div>
-          </DialogHeader>
+      <DialogContent className="max-w-md gap-0 overflow-hidden p-0 data-[state=open]:duration-300 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95">
+        <div className="relative overflow-hidden">
+          <div className="pointer-events-none absolute -left-24 -top-24 h-56 w-56 rounded-full bg-primary/10 blur-3xl" />
+          <div className="pointer-events-none absolute -bottom-24 -right-24 h-56 w-56 rounded-full bg-muted/40 blur-3xl" />
 
-          <form className="space-y-4" onSubmit={handleSubmit}>
+          <div className="space-y-5 p-5 sm:p-6">
+            <DialogHeader className="space-y-3 text-left motion-safe:animate-in motion-safe:slide-in-from-top-2 motion-safe:fade-in-0">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="flex size-8 items-center justify-center rounded-xl bg-blue-600 text-white shadow-lg shadow-blue-600/30">
+                    <Sparkles className="size-4" />
+                  </div>
+                  <p className="text-sm font-semibold tracking-wide">{siteName}</p>
+                </div>
+                <Badge className="w-fit rounded-full" variant="outline">
+                  {t("auth.secureAccess")}
+                </Badge>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge className="w-fit rounded-full" variant="secondary">
+                  {registrationMessage}
+                </Badge>
+                {authSettings?.requireEmailVerification ? (
+                  <Badge className="w-fit rounded-full" variant="outline">
+                    {t("auth.emailVerificationRequired")}
+                  </Badge>
+                ) : null}
+              </div>
+
+              <div className="space-y-1.5">
+                <DialogTitle className="text-xl font-bold tracking-tight sm:text-2xl">
+                  {dialogTitle}
+                </DialogTitle>
+                <DialogDescription className="text-xs leading-6">
+                  {modeDescription}
+                </DialogDescription>
+              </div>
+            </DialogHeader>
+
+            <form className="space-y-4 rounded-xl border border-border/60 bg-muted/10 p-4 motion-safe:animate-in motion-safe:slide-in-from-bottom-2 motion-safe:fade-in-0" onSubmit={handleSubmit}>
             {mode === "login" ? (
               <>
                 <div className="grid gap-2">
                   <Label htmlFor="login-account">{t("auth.account")}</Label>
                   <Input
                     autoComplete="username"
-                    className="h-9"
+                    className={inputClassName}
                     id="login-account"
                     onChange={(event) => setLoginValue(event.target.value)}
                     placeholder={t("auth.accountPlaceholder")}
@@ -327,7 +345,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                   <Label htmlFor="login-password">{t("auth.password")}</Label>
                   <Input
                     autoComplete="current-password"
-                    className="h-9"
+                    className={inputClassName}
                     id="login-password"
                     onChange={(event) => setPassword(event.target.value)}
                     placeholder={t("auth.passwordPlaceholder")}
@@ -344,7 +362,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                   </Label>
                   <Input
                     autoComplete="username"
-                    className="h-9"
+                    className={inputClassName}
                     id="register-username"
                     onChange={(event) =>
                       setRegisterUsername(event.target.value)
@@ -358,7 +376,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                   <Label htmlFor="register-email">{t("auth.email")}</Label>
                   <Input
                     autoComplete="email"
-                    className="h-9"
+                    className={inputClassName}
                     id="register-email"
                     onChange={(event) => setRegisterEmail(event.target.value)}
                     placeholder={t("auth.emailPlaceholder")}
@@ -373,7 +391,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                   </Label>
                   <Input
                     autoComplete="new-password"
-                    className="h-9"
+                    className={inputClassName}
                     id="register-password"
                     onChange={(event) =>
                       setRegisterPassword(event.target.value)
@@ -389,7 +407,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                 <Label htmlFor="forgot-login">{t("auth.account")}</Label>
                 <Input
                   autoComplete="username"
-                  className="h-9"
+                  className={inputClassName}
                   id="forgot-login"
                   onChange={(event) => setForgotLogin(event.target.value)}
                   placeholder={t("auth.accountPlaceholder")}
@@ -401,7 +419,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                 <div className="grid gap-2">
                   <Label htmlFor="two-factor-code">{t("auth.verificationCode")}</Label>
                   <Input
-                    className="h-9"
+                    className={inputClassName}
                     id="two-factor-code"
                     inputMode="numeric"
                     onChange={(event) => setTwoFactorCode(event.target.value)}
@@ -419,7 +437,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                 <div className="grid gap-2">
                   <Label htmlFor="reset-code">{t("auth.verificationCode")}</Label>
                   <Input
-                    className="h-9"
+                    className={inputClassName}
                     id="reset-code"
                     inputMode="numeric"
                     onChange={(event) => setResetCode(event.target.value)}
@@ -452,7 +470,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                   </Label>
                   <Input
                     autoComplete="new-password"
-                    className="h-9"
+                    className={inputClassName}
                     id="reset-password"
                     onChange={(event) => setNextPassword(event.target.value)}
                     placeholder={t("auth.newPasswordPlaceholder")}
@@ -500,7 +518,7 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
 
             {mode === "login" ? (
               <>
-                <div className="flex justify-end">
+                <div className="flex flex-wrap items-center justify-start gap-1.5">
                   <Button
                     size="sm"
                     type="button"
@@ -508,6 +526,15 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                     onClick={() => switchMode("forgot")}
                   >
                     {t("auth.forgotPassword")}
+                  </Button>
+                  <Button
+                    disabled={!canRegister}
+                    size="sm"
+                    type="button"
+                    variant="ghost"
+                    onClick={() => switchMode("register")}
+                  >
+                    {t("auth.createAccount")}
                   </Button>
                 </div>
 
@@ -551,26 +578,6 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                     </p>
                   )}
                 </div>
-
-                <div className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-muted/10 px-3 py-2.5">
-                  <div className="space-y-0.5">
-                    <p className="text-sm font-medium">
-                      {t("auth.createAccount")}
-                    </p>
-                    <p className="text-xs leading-5 text-muted-foreground">
-                      {t("auth.createAccountHint")}
-                    </p>
-                  </div>
-                  <Button
-                    disabled={!canRegister}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                    onClick={() => switchMode("register")}
-                  >
-                    {t("auth.createAccount")}
-                  </Button>
-                </div>
               </>
             ) : (
               <div className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-muted/10 px-3 py-2.5">
@@ -596,30 +603,10 @@ export function LoginModal({ open, onOpenChange }: LoginModalProps) {
                 </Button>
               </div>
             )}
-          </form>
-        </div>
-
-        <div className="grid gap-3 border-t bg-muted/35 px-5 py-4 sm:grid-cols-2">
-          <div className="flex items-start gap-3 rounded-lg border border-border/60 bg-background/80 px-3 py-3">
-            <div className="flex size-8 items-center justify-center rounded-lg border border-border/60 bg-muted/40 text-muted-foreground">
-              <UserRound className="size-4" />
-            </div>
-            <div className="space-y-1">
-              <p className="text-sm font-medium">{t("auth.userTitle")}</p>
-              <p className="text-xs leading-5 text-muted-foreground">
-                {t("auth.userDescription")}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-start gap-3 rounded-lg border border-border/60 bg-background/80 px-3 py-3">
-            <div className="flex size-8 items-center justify-center rounded-lg border border-border/60 bg-muted/40 text-muted-foreground">
-              <ShieldCheck className="size-4" />
-            </div>
-            <div className="space-y-1">
-              <p className="text-sm font-medium">{t("auth.adminTitle")}</p>
-              <p className="text-xs leading-5 text-muted-foreground">
-                {t("auth.adminDescription")}
-              </p>
+            </form>
+            <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-background/80 px-3 py-2 text-xs text-muted-foreground motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1">
+              <Shield className="size-3.5" />
+              <span>{t("auth.secureAccess")}</span>
             </div>
           </div>
         </div>

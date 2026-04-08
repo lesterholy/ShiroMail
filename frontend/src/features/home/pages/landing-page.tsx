@@ -20,7 +20,7 @@ import {
   PublicStatBadge,
 } from "../components/public-ui";
 import { useQuery } from "@tanstack/react-query";
-import { fetchPublicSiteSettings } from "../api";
+import { fetchPublicSiteSettings, fetchPublicSiteStats } from "../api";
 import { useSiteName } from "@/hooks/use-site-name";
 
 export function LandingPage() {
@@ -30,7 +30,13 @@ export function LandingPage() {
     queryFn: fetchPublicSiteSettings,
     staleTime: 60_000,
   });
+  const siteStatsQuery = useQuery({
+    queryKey: ["public-site-stats"],
+    queryFn: fetchPublicSiteStats,
+    staleTime: 15_000,
+  });
   const siteSettings = siteSettingsQuery.data;
+  const siteStats = siteStatsQuery.data;
   const siteName = useSiteName();
   const featureItems = [
     {
@@ -56,9 +62,18 @@ export function LandingPage() {
   ];
   const workflowItems = [t("landing.workflow.item1"), t("landing.workflow.item2"), t("landing.workflow.item3")];
   const previewSignals = [
-    { title: t("landing.preview.domainPoolTitle"), body: t("landing.preview.domainPoolBody") },
-    { title: t("landing.preview.realtimeTitle"), body: t("landing.preview.realtimeBody") },
-    { title: t("landing.preview.permissionTitle"), body: t("landing.preview.permissionBody") },
+    {
+      title: t("landing.preview.domainPoolTitle"),
+      body: siteStats ? `${siteStats.activeDomainCount.toLocaleString()}` : t("landing.preview.domainPoolBody"),
+    },
+    {
+      title: t("landing.preview.realtimeTitle"),
+      body: siteStats ? `${siteStats.todayMessageCount.toLocaleString()}` : t("landing.preview.realtimeBody"),
+    },
+    {
+      title: t("landing.preview.permissionTitle"),
+      body: siteStats ? `${siteStats.totalUserCount.toLocaleString()}` : t("landing.preview.permissionBody"),
+    },
   ];
   const previewMessages = [
     {
@@ -168,6 +183,13 @@ export function LandingPage() {
                     <div className="mt-1 text-sm font-medium">{item.body}</div>
                   </div>
                 ))}
+              </div>
+              <div className="text-[11px] leading-5 text-muted-foreground">
+                {siteStatsQuery.isLoading
+                  ? "正在同步实时数据..."
+                  : siteStats
+                    ? `最近更新：${new Date(siteStats.updatedAt).toLocaleString()}`
+                    : "暂时无法获取实时数据"}
               </div>
 
               <div className="space-y-2">

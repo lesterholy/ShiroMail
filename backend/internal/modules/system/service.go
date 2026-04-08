@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 var ErrInboundSpoolUnavailable = errors.New("inbound spool unavailable")
@@ -14,6 +15,7 @@ var ErrInboundSpoolItemNotFound = errors.New("inbound spool item not found")
 type InboundSpoolListFunc func(ctx context.Context) ([]InboundSpoolRecord, error)
 type InboundSpoolRetryFunc func(ctx context.Context, id uint64) (InboundSpoolRecord, error)
 type SMTPMetricsSnapshotFunc func(ctx context.Context) (SMTPMetricsSnapshot, error)
+type PublicSiteStatsFunc func(ctx context.Context) (PublicSiteStats, error)
 
 type Service struct {
 	configRepo  ConfigRepository
@@ -23,6 +25,7 @@ type Service struct {
 	spoolList   InboundSpoolListFunc
 	spoolRetry  InboundSpoolRetryFunc
 	smtpMetrics SMTPMetricsSnapshotFunc
+	publicStats PublicSiteStatsFunc
 }
 
 func NewService(configRepo ConfigRepository, jobRepo JobRepository, auditRepo AuditRepository, options ...any) *Service {
@@ -30,6 +33,7 @@ func NewService(configRepo ConfigRepository, jobRepo JobRepository, auditRepo Au
 	var spoolList InboundSpoolListFunc
 	var spoolRetry InboundSpoolRetryFunc
 	var smtpMetrics SMTPMetricsSnapshotFunc
+	var publicStats PublicSiteStatsFunc
 	for _, option := range options {
 		if current, ok := option.(MailDeliveryTester); ok {
 			mailTester = current
@@ -43,6 +47,9 @@ func NewService(configRepo ConfigRepository, jobRepo JobRepository, auditRepo Au
 		if current, ok := option.(SMTPMetricsSnapshotFunc); ok {
 			smtpMetrics = current
 		}
+		if current, ok := option.(PublicSiteStatsFunc); ok {
+			publicStats = current
+		}
 	}
 	if mailTester == nil {
 		mailTester = NewConfigMailDeliveryTester(configRepo)
@@ -55,6 +62,7 @@ func NewService(configRepo ConfigRepository, jobRepo JobRepository, auditRepo Au
 		spoolList:   spoolList,
 		spoolRetry:  spoolRetry,
 		smtpMetrics: smtpMetrics,
+		publicStats: publicStats,
 	}
 }
 
@@ -140,6 +148,20 @@ func buildOAuthSectionKeys(items []ConfigEntry) []string {
 
 func (s *Service) PublicSiteSettings(ctx context.Context) (PublicSiteSettings, error) {
 	return LoadPublicSiteSettings(ctx, s.configRepo)
+}
+
+func (s *Service) PublicStats(ctx context.Context) (PublicSiteStats, error) {
+	if s.publicStats == nil {
+		return PublicSiteStats{UpdatedAt: nowUTC()}, nil
+	}
+	item, err := s.publicStats(ctx)
+	if err != nil {
+		return PublicSiteStats{}, err
+	}
+	if item.UpdatedAt.IsZero() {
+		item.UpdatedAt = nowUTC()
+	}
+	return item, nil
 }
 
 func (s *Service) APILimitsSettings(ctx context.Context) (APILimitsConfig, error) {
@@ -382,6 +404,10 @@ func matchesInboundSpoolFailureMode(item InboundSpoolRecord, failureMode string)
 	default:
 		return true
 	}
+}
+
+func nowUTC() time.Time {
+	return time.Now().UTC()
 }
 
 func buildSMTPRejectedDetails(rejected map[string]int64) []SMTPMetricReason {

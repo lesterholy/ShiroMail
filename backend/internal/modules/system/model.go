@@ -118,6 +118,15 @@ type MailDeliveryDiagnostic struct {
 	Retryable bool   `json:"retryable"`
 }
 
+type PublicSiteStats struct {
+	ActiveMailboxCount int       `json:"activeMailboxCount"`
+	TodayMessageCount  int       `json:"todayMessageCount"`
+	ActiveDomainCount  int       `json:"activeDomainCount"`
+	TotalUserCount     int       `json:"totalUserCount"`
+	FailedJobCount     int       `json:"failedJobCount"`
+	UpdatedAt          time.Time `json:"updatedAt"`
+}
+
 type ConfigRepository interface {
 	List(ctx context.Context) ([]ConfigEntry, error)
 	Upsert(ctx context.Context, key string, value map[string]any, actorID uint64) (ConfigEntry, error)
